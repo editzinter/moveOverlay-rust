@@ -1,0 +1,6 @@
+/target
+stockfish.exe
+best.onnx
+region.json
+config.json
+**/*.pdb

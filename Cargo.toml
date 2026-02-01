@@ -1,0 +1,14 @@
+[package]
+name = "chess_overlay"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xcap = "0.0.14"
+image = "0.25.5"
+ort = { version = "2.0.0-rc.9", features = ["download-binaries"] }
+ndarray = "0.17"
+eframe = "0.26"
+egui = "0.26"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
