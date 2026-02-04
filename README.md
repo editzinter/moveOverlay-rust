@@ -1,61 +1,55 @@
-# MoveOverlay-Rust ♟️🤖
+# MoveOverlay-Rust: AI-Powered Chess Analysis
 
-A high-performance, AI-powered chess move overlay built in Rust. It utilizes real-time computer vision to detect board states and integrates the world-class Stockfish engine to provide instant move suggestions directly on your screen.
+MoveOverlay-Rust is a high-performance tool designed to provide real-time chess move suggestions. By combining computer vision with the Stockfish chess engine, it detects the current state of a board on your screen and overlays suggested moves as arrows directly on top of the board.
 
-![Chess Overlay Preview](https://github.com/editzinter/moveOverlay-rust/raw/main/preview.png) *(Note: Placeholder for actual preview image)*
+## Features
 
-## 🚀 Features
+- **Transparent Fullscreen Overlay**: High-quality arrows are rendered on a transparent layer, allowing you to interact with your chess game without interruption.
+- **AI-Driven Detection**: Uses a YOLOv8-based vision model via ONNX Runtime, leveraging GPU acceleration (DirectML/CUDA) for near-instant piece detection.
+- **Integrated Analysis**: Powered by the Stockfish 17.1 engine, providing depth-based analysis for the top three move variations.
+- **Intuitive Selection Tool**: A draggable selection interface allows you to quickly define the chessboard area on any screen.
+- **Responsive Interface**: A separate, non-transparent settings window ensures the controls remain interactive even while the main overlay is in "click-through" mode.
+- **Global Hotkeys**: Effortlessly toggle between White and Black move suggestions using the 'B' key.
 
-- **Transparent Fullscreen Overlay**: High-quality arrows rendered directly on top of your chess board without interfering with game interaction.
-- **AI Vision**: YOLOv8-based piece detection using ONNX Runtime with **GPU acceleration** (DirectML/CUDA).
-- **Stockfish Integration**: Optimized CPU-based analysis providing the top 3 best moves.
-- **Smart Selection Tool**: Easily define the chessboard region with a simple drag-and-drop tool.
-- **Multi-Window Interface**: Interactive settings panel separate from the visual overlay for seamless control.
-- **Instant Toggles**: Use global hotkeys to switch between White and Black move suggestions on the fly.
+## Installation and Setup
 
-## 🛠️ Installation
+### Download the Complete Bundle
+The easiest way to get started is to download the latest **[Release](https://github.com/editzinter/moveOverlay-rust/releases/latest)**. This ZIP file contains the pre-compiled application, the trained AI model (`best.onnx`), and the optimized Stockfish engine.
 
-### Option 1: Download the Bundle (Recommended)
-Grab the latest **[Release](https://github.com/editzinter/moveOverlay-rust/releases/latest)** which includes the pre-compiled executable, the trained vision model (`best.onnx`), and the optimized Stockfish engine.
+### Building from Source
+If you prefer to build the project yourself, ensure you have the [Rust toolchain](https://rustup.rs/) installed.
 
-### Option 2: Build from Source
-Ensure you have [Rust](https://rustup.rs/) installed.
-
-1. **Clone the repository:**
+1. Clone the repository:
    ```bash
    git clone https://github.com/editzinter/moveOverlay-rust.git
    cd moveOverlay-rust
    ```
-
-2. **Prepare Binaries:**
-   Place your `best.onnx` and `stockfish.exe` in the project root.
-
-3. **Build and Run:**
+2. Place the required binaries (`best.onnx` and `stockfish.exe`) into the project's root directory.
+3. Build and run in release mode:
    ```bash
    cargo run --release
    ```
 
-## 📖 Usage Instructions
+## How to Use
 
-1. **Launch**: Start `redo-man.exe`.
-2. **Select Region**: Click **"📐 Select Board Region"** in the Settings window (or press `R`). Drag your mouse over the chessboard on your screen.
-3. **Configure**: Adjust Stockfish depth, number of lines, and scan FPS in the settings menu.
-4. **Start**: Click **"▶ START"**. Arrows will begin appearing on the board.
-5. **Toggle Side**: Press **`B`** to instantly switch between showing White and Black moves.
+1. **Launch**: Open the application. You will see a transparent overlay and a settings window.
+2. **Select the Board**: Click the "Select Board Region" button or press the **R** key. Your screen will dim, allowing you to click and drag a rectangle over the chessboard.
+3. **Configure Settings**: Use the settings window to adjust Stockfish depth, the number of suggested lines, and scan frequency.
+4. **Start Analysis**: Click the **START** button. The application will begin scanning the board and drawing arrows for the best moves.
+5. **Toggle Side**: Press the **B** key at any time to switch between analysis for White and Black pieces.
 
-## ⚡ Hardware Acceleration
+## Technical Performance
 
-The application is optimized for modern hardware:
-- **Vision Model**: Runs on your **GPU** (NVIDIA RTX/AMD/Intel) via DirectML for near-zero latency detection.
-- **Stockfish**: Runs on your **CPU** using 8 optimized threads and 256MB of hash memory.
+The system is designed to maximize your hardware's potential:
+- **Vision Inference**: Offloaded to the **GPU** via DirectML, ensuring the scan does not slow down your system.
+- **Engine Calculation**: Stockfish is configured to use 8 CPU threads and 256MB of hash memory for fast, accurate evaluations.
 
-## ⚠️ Safety & Ethics
+## Safety and Fair Play
 
 **Important Disclaimer:**
-- This tool is intended for **analysis, study, and educational purposes only**.
-- **Do not use this tool on competitive platforms** (like Chess.com or Lichess) during ranked matches. Most platforms consider this cheating, and it will result in a permanent ban.
-- The creators are not responsible for any misuse of this software.
+This software is developed strictly for **analysis, study, and educational purposes**.
 
-## 📜 License
+Most online chess platforms (such as Chess.com and Lichess) strictly prohibit the use of external assistance or "engines" during competitive play. Using this tool during ranked or tournament matches constitutes cheating and will likely result in a permanent ban of your account. The developers assume no responsibility for any misuse of this software.
 
-This project is open-source. See the [LICENSE](LICENSE) file for details. (AGPL-3.0 for the model, as per Ultralytics).
+## License
+This project is open-source. Please refer to the LICENSE file for more information.
