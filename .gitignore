@@ -1,0 +1,6 @@
+/target
+/config.json
+best.onnx
+stockfish.exe
+*.pdb
+*.exe
