@@ -392,13 +392,15 @@ impl eframe::App for OverlayWrapper {
 
                 if self.selection_mode {
                     ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
-                    painter.rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(160));
+                    painter.rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(170));
+                    
+                    // Top banner instruction
                     painter.text(
-                        ui.max_rect().center(),
+                        egui::pos2(ui.max_rect().center().x, ui.max_rect().min.y + 50.0),
                         egui::Align2::CENTER_CENTER,
-                        "CLICK AND DRAG ACROSS CHESSBOARD TO SELECT",
-                        egui::FontId::proportional(26.0),
-                        egui::Color32::WHITE,
+                        "📐 DRAG TO SELECT FULL 8x8 CHESSBOARD (FROM CORNER A8 TO H1)",
+                        egui::FontId::proportional(22.0),
+                        egui::Color32::from_rgb(255, 215, 0),
                     );
 
                     let response = ui.interact(
@@ -412,12 +414,42 @@ impl eframe::App for OverlayWrapper {
                     if let Some(start) = self.selection_start {
                         if let Some(current) = response.interact_pointer_pos() {
                             let rect = egui::Rect::from_two_pos(start, current);
+                            
+                            // Outer board bounding border
                             painter.rect_stroke(
                                 rect,
                                 0.0,
-                                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 230, 118)),
+                                egui::Stroke::new(3.0, egui::Color32::from_rgb(0, 230, 118)),
                             );
-                            if response.drag_stopped() {
+
+                            // Live 8x8 alignment grid
+                            let cell_w = rect.width() / 8.0;
+                            let cell_h = rect.height() / 8.0;
+
+                            for i in 1..8 {
+                                let x = rect.min.x + i as f32 * cell_w;
+                                let y = rect.min.y + i as f32 * cell_h;
+                                painter.line_segment(
+                                    [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 230, 118, 140)),
+                                );
+                                painter.line_segment(
+                                    [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 230, 118, 140)),
+                                );
+                            }
+
+                            // Dimension info badge
+                            let dim_text = format!("{:.0} × {:.0} px", rect.width(), rect.height());
+                            painter.text(
+                                egui::pos2(rect.min.x + 8.0, rect.min.y + 10.0),
+                                egui::Align2::LEFT_TOP,
+                                dim_text,
+                                egui::FontId::monospace(13.0),
+                                egui::Color32::WHITE,
+                            );
+
+                            if response.drag_stopped() && rect.width() > 60.0 && rect.height() > 60.0 {
                                 let mut c = self.config.lock().unwrap();
                                 c.board_region = Some(crate::config::BoardRegion {
                                     x: rect.min.x as u32,

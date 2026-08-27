@@ -2,8 +2,6 @@ use crate::vision::inference::Detection;
 use shakmaty::{fen::Fen, Board, Color, Piece, Role, Setup, Square};
 
 pub fn detections_to_fen(detections: &[Detection], play_as_black: bool) -> Option<String> {
-    let mut board = Board::empty();
-
     // Map class_id to Piece
     let class_to_piece = |id: usize| -> Option<Piece> {
         match id {
@@ -59,60 +57,70 @@ pub fn detections_to_fen(detections: &[Detection], play_as_black: bool) -> Optio
         }
     };
 
-    // Find the board bounding box to normalize coordinates
-    let board_box = detections.iter().find(|d| d.class_id == 0);
-    let (bx, by, bw, bh) = if let Some(b) = board_box {
-        (
-            b.bbox[0] - b.bbox[2] / 2.0,
-            b.bbox[1] - b.bbox[3] / 2.0,
-            b.bbox[2],
-            b.bbox[3],
-        )
-    } else {
-        (0.0, 0.0, 640.0, 640.0)
-    };
-
-    let mut white_king_count = 0;
-    let mut black_king_count = 0;
+    // Track highest-confidence piece per square (64 squares) to prevent collision overwrite
+    let mut square_pieces: [Option<(Piece, f32)>; 64] = [None; 64];
 
     for d in detections {
         if d.class_id == 0 {
-            continue;
+            continue; // Skip board box
         }
         if let Some(piece) = class_to_piece(d.class_id) {
+            // Bbox coordinates are normalized [0.0, 1.0] relative to the captured chessboard
+            let rel_x = d.bbox[0].clamp(0.0, 0.999);
+            // Pieces are taller than wide, base sits slightly below vertical center
+            let rel_y = (d.bbox[1] + d.bbox[3] * 0.1).clamp(0.0, 0.999);
+
+            let col_idx = (rel_x * 8.0).floor() as u32;
+            let row_idx = (rel_y * 8.0).floor() as u32;
+
+            if col_idx < 8 && row_idx < 8 {
+                let (file_num, rank_num) = if play_as_black {
+                    // Board is flipped (Black perspective):
+                    // Leftmost on screen is file H (7), rightmost is file A (0)
+                    // Top on screen is rank 1 (0), bottom is rank 8 (7)
+                    (7 - col_idx, row_idx)
+                } else {
+                    // Standard (White perspective):
+                    // Leftmost on screen is file A (0), rightmost is file H (7)
+                    // Top on screen is rank 8 (7), bottom is rank 1 (0)
+                    (col_idx, 7 - row_idx)
+                };
+
+                let sq_idx = (rank_num * 8 + file_num) as usize;
+                if sq_idx < 64 {
+                    match &square_pieces[sq_idx] {
+                        Some((_, existing_conf)) if *existing_conf >= d.confidence => {
+                            // Retain higher confidence piece
+                        }
+                        _ => {
+                            square_pieces[sq_idx] = Some((piece, d.confidence));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut board = Board::empty();
+    let mut white_king_count = 0;
+    let mut black_king_count = 0;
+
+    for (sq_idx, piece_opt) in square_pieces.iter().enumerate() {
+        if let Some((piece, _)) = piece_opt {
+            let file_num = (sq_idx % 8) as u32;
+            let rank_num = (sq_idx / 8) as u32;
+            let square = Square::from_coords(
+                shakmaty::File::new(file_num),
+                shakmaty::Rank::new(rank_num),
+            );
+            board.set_piece_at(square, *piece);
+
             if piece.role == Role::King {
                 if piece.color == Color::White {
                     white_king_count += 1;
                 } else {
                     black_king_count += 1;
                 }
-            }
-
-            // Calculate square from bbox
-            let rel_x = (d.bbox[0] - bx) / bw;
-            let rel_y = (d.bbox[1] - by) / bh;
-
-            let col_idx = (rel_x * 8.0).floor() as i32;
-            let row_idx = (rel_y * 8.0).floor() as i32;
-
-            if (0..8).contains(&col_idx) && (0..8).contains(&row_idx) {
-                let (file_num, rank_num) = if play_as_black {
-                    // Board is flipped (Black perspective):
-                    // Leftmost on screen is file H (7), rightmost is file A (0)
-                    // Top on screen is rank 1 (0), bottom is rank 8 (7)
-                    (7 - col_idx as u32, row_idx as u32)
-                } else {
-                    // Standard (White perspective):
-                    // Leftmost on screen is file A (0), rightmost is file H (7)
-                    // Top on screen is rank 8 (7), bottom is rank 1 (0)
-                    (col_idx as u32, 7 - row_idx as u32)
-                };
-
-                let square = Square::from_coords(
-                    shakmaty::File::new(file_num),
-                    shakmaty::Rank::new(rank_num),
-                );
-                board.set_piece_at(square, piece);
             }
         }
     }
@@ -144,15 +152,9 @@ mod tests {
     fn test_missing_kings_validation() {
         let detections = vec![
             Detection {
-                class_id: 0,
-                confidence: 0.9,
-                bbox: [320.0, 320.0, 640.0, 640.0],
-            },
-            // Only white king, no black king
-            Detection {
-                class_id: 1, // White King
+                class_id: 1, // White King only
                 confidence: 0.95,
-                bbox: [360.0, 600.0, 80.0, 80.0],
+                bbox: [0.5, 0.9, 0.1, 0.1],
             },
         ];
         assert_eq!(detections_to_fen(&detections, false), None);
@@ -161,24 +163,17 @@ mod tests {
     #[test]
     fn test_white_and_black_perspective() {
         let detections = vec![
-            Detection {
-                class_id: 0,
-                confidence: 0.99,
-                bbox: [320.0, 320.0, 640.0, 640.0],
-            },
-            // White King at bottom (center X, near bottom Y)
-            // Rel X = 0.5 (col 4 -> file E), Rel Y = 7.0/8.0 (row 7 -> rank 1 for White, rank 8 for Black)
+            // White King at e1
             Detection {
                 class_id: 1, // White King
                 confidence: 0.95,
-                bbox: [360.0, 600.0, 80.0, 80.0],
+                bbox: [0.56, 0.9, 0.08, 0.1],
             },
-            // Black King at top (center X, near top Y)
-            // Rel X = 0.5 (col 4 -> file E for White, file D for Black), Rel Y = 0.5/8.0 (row 0 -> rank 8 for White, rank 1 for Black)
+            // Black King at e8
             Detection {
                 class_id: 7, // Black King
                 confidence: 0.95,
-                bbox: [360.0, 40.0, 80.0, 80.0],
+                bbox: [0.56, 0.05, 0.08, 0.1],
             },
         ];
 
@@ -193,4 +188,3 @@ mod tests {
         assert!(fen_black_str.ends_with(" b - - 0 1"));
     }
 }
-
