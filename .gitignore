@@ -4,3 +4,4 @@ best.onnx
 stockfish.exe
 *.pdb
 *.exe
+*.zip
