@@ -2405,6 +2405,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "moveOverlay-rust"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "crossbeam-channel",
+ "eframe",
+ "egui",
+ "env_logger",
+ "image 0.24.9",
+ "log",
+ "ndarray",
+ "ort",
+ "rdev",
+ "screenshots",
+ "serde",
+ "serde_json",
+ "shakmaty",
+ "tokio",
+ "toml",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3248,29 +3271,6 @@ dependencies = [
  "libc",
  "winapi",
  "x11",
-]
-
-[[package]]
-name = "redo-man"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossbeam-channel",
- "eframe",
- "egui",
- "env_logger",
- "image 0.24.9",
- "log",
- "ndarray",
- "ort",
- "rdev",
- "screenshots",
- "serde",
- "serde_json",
- "shakmaty",
- "tokio",
- "toml",
- "windows 0.58.0",
 ]
 
 [[package]]

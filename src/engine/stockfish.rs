@@ -1,22 +1,31 @@
 use anyhow::{anyhow, Result};
+use crossbeam_channel::{unbounded, Receiver};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 pub struct Stockfish {
     child: Child,
     stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    line_rx: Receiver<String>,
 }
 
 impl Stockfish {
     pub fn new(path: &str) -> Result<Self> {
-        let mut child = Command::new(path)
-            .stdin(Stdio::piped())
+        let mut cmd = Command::new(path);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .stderr(Stdio::null());
+
+        #[cfg(windows)]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        let mut child = cmd.spawn()?;
 
         let stdin = child
             .stdin
@@ -26,12 +35,29 @@ impl Stockfish {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("Failed to capture stdout of Stockfish"))?;
-        let reader = BufReader::new(stdout);
+
+        let (line_tx, line_rx) = unbounded::<String>();
+
+        // Dedicated background reader thread to eliminate any stdout blocking
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line) {
+                if n == 0 {
+                    break;
+                }
+                let trimmed = line.trim().to_string();
+                line.clear();
+                if line_tx.send(trimmed).is_err() {
+                    break;
+                }
+            }
+        });
 
         let mut sf = Self {
             child,
             stdin,
-            reader,
+            line_rx,
         };
 
         // Initial UCI handshake
@@ -55,6 +81,9 @@ impl Stockfish {
     }
 
     pub fn analyze(&mut self, fen: &str, depth: u32, lines: u32) -> Result<Vec<String>> {
+        // Drain any stale output from previous commands
+        while self.line_rx.try_recv().is_ok() {}
+
         // Sync engine state
         self.send("isready")?;
         self.wait_for("readyok", Duration::from_secs(2))?;
@@ -69,17 +98,33 @@ impl Stockfish {
         let timeout = Duration::from_millis(3500);
 
         loop {
-            if start_time.elapsed() > timeout {
+            let elapsed = start_time.elapsed();
+            if elapsed >= timeout {
                 let _ = self.send("stop");
+                // Wait briefly for the bestmove response after stopping
+                let stop_deadline = Instant::now() + Duration::from_millis(300);
+                while Instant::now() < stop_deadline {
+                    if let Ok(line_str) = self.line_rx.recv_timeout(Duration::from_millis(50)) {
+                        if line_str.starts_with("bestmove") {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
                 break;
             }
 
-            let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
-                break;
-            }
+            let remaining = timeout - elapsed;
+            let line_str = match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(l) => l,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            };
 
-            let line_str = line.trim();
             if line_str.starts_with("bestmove") {
                 if pv_map.is_empty() {
                     let parts: Vec<&str> = line_str.split_whitespace().collect();
@@ -134,18 +179,27 @@ impl Stockfish {
     fn wait_for(&mut self, expected: &str, timeout: Duration) -> Result<()> {
         let start = Instant::now();
         loop {
-            if start.elapsed() > timeout {
+            let elapsed = start.elapsed();
+            if elapsed > timeout {
                 return Err(anyhow!("Timed out waiting for {}", expected));
             }
-            let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
-                if start.elapsed() > Duration::from_millis(100) {
-                    return Err(anyhow!("Engine stream closed while waiting for {}", expected));
+            let remaining = timeout - elapsed;
+            match self
+                .line_rx
+                .recv_timeout(remaining.min(Duration::from_millis(200)))
+            {
+                Ok(line) => {
+                    if line.contains(expected) {
+                        return Ok(());
+                    }
                 }
-                continue;
-            }
-            if line.contains(expected) {
-                return Ok(());
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(
+                        "Engine stream closed while waiting for {}",
+                        expected
+                    ));
+                }
             }
         }
     }
@@ -154,6 +208,8 @@ impl Stockfish {
 impl Drop for Stockfish {
     fn drop(&mut self) {
         let _ = self.send("quit");
+        thread::sleep(Duration::from_millis(50));
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
