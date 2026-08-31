@@ -143,17 +143,18 @@ fn main() {
         let mut last_play_side = false;
         let mut last_depth = 0;
         let mut last_lines = 0;
+        let mut last_time_limit_ms = 0;
         let mut last_region: Option<crate::config::BoardRegion> = None;
-        let mut frame_counter: u64 = 0;
         let mut invalid_detection_count: u32 = 0;
 
         loop {
-            let (region, depth, lines, conf, play_as_black, fps, running) = {
+            let (region, depth, lines, time_limit_ms, conf, play_as_black, fps, running) = {
                 let c = lock_config(&config_clone);
                 (
                     c.board_region.clone(),
                     c.stockfish_depth,
                     c.stockfish_lines,
+                    c.stockfish_time_ms,
                     c.confidence_threshold,
                     c.play_as_black,
                     c.fps,
@@ -166,6 +167,7 @@ fn main() {
                 || play_as_black != last_play_side
                 || depth != last_depth
                 || lines != last_lines
+                || time_limit_ms != last_time_limit_ms
                 || region != last_region;
 
             if state_changed {
@@ -175,6 +177,7 @@ fn main() {
                 last_play_side = play_as_black;
                 last_depth = depth;
                 last_lines = lines;
+                last_time_limit_ms = time_limit_ms;
                 last_region = region.clone();
                 invalid_detection_count = 0;
                 let _ = move_tx.send(Vec::new());
@@ -186,12 +189,6 @@ fn main() {
                         let capture_result = capture_region(r.x, r.y, r.width, r.height);
 
                         if let Ok(img) = capture_result {
-                            // Save every 10th frame for debugging
-                            frame_counter += 1;
-                            if frame_counter % 10 == 1 {
-                                let _ = img.save("debug_captured_frame.png");
-                            }
-
                             if let Ok(detections) = detector.detect(&img, conf) {
                                 if let Some(board) = crate::vision::board::detections_to_board(
                                     &detections,
@@ -202,7 +199,7 @@ fn main() {
                                         if last_analyzed_fen.as_deref() != Some(&fen) {
                                             // Instantly clear stale arrows from previous position
                                             let _ = move_tx.send(Vec::new());
-                                            match sf.analyze(&fen, depth, lines) {
+                                            match sf.analyze(&fen, depth, lines, time_limit_ms) {
                                                 Ok(raw_moves) => {
                                                     let valid_moves = crate::vision::board::validate_moves_for_side(&fen, &raw_moves, play_as_black);
                                                     println!(
@@ -467,6 +464,10 @@ impl eframe::App for OverlayWrapper {
                     ui.add(egui::Slider::new(&mut c.stockfish_depth, 1..=30).text("Search Depth"));
                     ui.add(
                         egui::Slider::new(&mut c.stockfish_lines, 1..=5).text("Suggested Lines"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut c.stockfish_time_ms, 10..=2_000)
+                            .text("Search Budget (ms)"),
                     );
                     ui.add(egui::Slider::new(&mut c.fps, 1..=10).text("Scan Rate (FPS)"));
 

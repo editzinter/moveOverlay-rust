@@ -69,8 +69,12 @@ impl Stockfish {
             .map(|n| n.get())
             .unwrap_or(4);
         let threads = (num_cpus.saturating_sub(2)).clamp(1, 8);
-        let _ = sf.set_option("Threads", &threads.to_string());
-        let _ = sf.set_option("Hash", "128");
+        sf.set_option("Threads", &threads.to_string())?;
+        sf.set_option("Hash", "128")?;
+        // UCI options are applied asynchronously by some engines. Ensure they are
+        // active before the first timed search is issued.
+        sf.send("isready")?;
+        sf.wait_for("readyok", Duration::from_secs(2))?;
 
         println!("Stockfish initialized with {} threads", threads);
         Ok(sf)
@@ -80,22 +84,35 @@ impl Stockfish {
         self.send(&format!("setoption name {} value {}", name, value))
     }
 
-    pub fn analyze(&mut self, fen: &str, depth: u32, lines: u32) -> Result<Vec<String>> {
+    pub fn analyze(
+        &mut self,
+        fen: &str,
+        depth: u32,
+        lines: u32,
+        time_limit_ms: u32,
+    ) -> Result<Vec<String>> {
         // Drain any stale output from previous commands
         while self.line_rx.try_recv().is_ok() {}
-
-        // Sync engine state
-        self.send("isready")?;
-        self.wait_for("readyok", Duration::from_secs(2))?;
 
         let lines_clamped = lines.clamp(1, 5);
         self.set_option("MultiPV", &lines_clamped.to_string())?;
         self.send(&format!("position fen {}", fen))?;
-        self.send(&format!("go depth {}", depth.clamp(1, 30)))?;
+        // A depth search has unbounded wall-clock time: tactical positions can
+        // take orders of magnitude longer than quiet ones. Use a time budget so
+        // the screen-to-overlay latency remains predictable. Keep `depth` as a
+        // ceiling to preserve the UI's quality control.
+        let time_limit_ms = time_limit_ms.clamp(10, 2_000);
+        self.send(&format!(
+            "go movetime {} depth {}",
+            time_limit_ms,
+            depth.clamp(1, 30)
+        ))?;
 
         let mut pv_map: BTreeMap<u32, String> = BTreeMap::new();
         let start_time = Instant::now();
-        let timeout = Duration::from_millis(3500);
+        // Allow a small grace period for the engine to flush its final PV and
+        // bestmove after the requested move time.
+        let timeout = Duration::from_millis(u64::from(time_limit_ms) + 250);
 
         loop {
             let elapsed = start_time.elapsed();
