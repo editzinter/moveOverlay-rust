@@ -609,7 +609,7 @@ impl eframe::App for OverlayWrapper {
                         egui::Slider::new(&mut c.stockfish_time_ms, 10..=2_000)
                             .text("Search Budget (ms)"),
                     );
-                    ui.add(egui::Slider::new(&mut c.fps, 1..=10).text("Scan Rate (FPS)"));
+                    ui.add(egui::Slider::new(&mut c.fps, 1..=30).text("Scan Rate (FPS)"));
 
                     ui.add_space(8.0);
                     ui.separator();

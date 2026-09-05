@@ -44,13 +44,13 @@ fn default_stockfish_lines() -> u32 {
     2
 }
 fn default_stockfish_time_ms() -> u32 {
-    500
+    120
 }
 fn default_confidence() -> f32 {
     0.5
 }
 fn default_fps() -> u32 {
-    5
+    15
 }
 fn default_arrow_thickness() -> f32 {
     6.5
@@ -65,10 +65,10 @@ impl Default for AppConfig {
             board_region: None,
             stockfish_depth: 13,
             stockfish_lines: 2,
-            stockfish_time_ms: 500,
+            stockfish_time_ms: 120,
             confidence_threshold: 0.5,
             play_as_black: false,
-            fps: 5,
+            fps: 15,
             arrow_thickness: 6.5,
             stealth_mode: false,
             window_title: "Runtime Host".to_string(),
@@ -136,8 +136,9 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.stockfish_depth, 13);
         assert_eq!(cfg.stockfish_lines, 2);
+        assert_eq!(cfg.stockfish_time_ms, 120);
         assert_eq!(cfg.confidence_threshold, 0.5);
-        assert_eq!(cfg.fps, 5);
+        assert_eq!(cfg.fps, 15);
         assert!(!cfg.play_as_black);
         assert!(!cfg.stealth_mode);
     }
