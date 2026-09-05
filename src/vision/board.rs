@@ -249,6 +249,51 @@ pub fn validate_moves_for_side(
     valid_moves
 }
 
+/// Re-ranks candidate moves in Aggressive mode: prioritizes tactical checks, captures, and promotions.
+pub fn prioritize_aggressive_moves(fen_str: &str, moves: &[String]) -> Vec<String> {
+    if moves.len() <= 1 {
+        return moves.to_vec();
+    }
+
+    let fen: Fen = match fen_str.parse() {
+        Ok(f) => f,
+        Err(_) => return moves.to_vec(),
+    };
+    let pos: Chess = match fen.into_position(CastlingMode::Standard) {
+        Ok(p) => p,
+        Err(_) => return moves.to_vec(),
+    };
+
+    let mut scored: Vec<(i32, usize, String)> = Vec::new();
+
+    for (idx, m_str) in moves.iter().enumerate() {
+        // Base candidate priority so engine's top choice has baseline advantage
+        let mut score = (moves.len().saturating_sub(idx) as i32) * 5;
+
+        if let Ok(uci) = m_str.parse::<UciMove>() {
+            if let Ok(m) = uci.to_move(&pos) {
+                if m.is_capture() {
+                    score += 30;
+                }
+                if m.promotion().is_some() {
+                    score += 25;
+                }
+                let mut next_pos = pos.clone();
+                next_pos.play_unchecked(&m);
+                if next_pos.is_check() {
+                    score += 35;
+                }
+            }
+        }
+
+        scored.push((score, idx, m_str.clone()));
+    }
+
+    // Sort by score descending, then by original index ascending
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, _, m)| m).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +575,22 @@ mod tests {
         // Black's turn FEN checked with White perspective
         let black_turn_fen = "4k3/8/8/8/8/8/4P3/4K3 b - - 0 1";
         assert!(validate_moves_for_side(black_turn_fen, &moves, false).is_empty());
+    }
+
+    #[test]
+    fn test_prioritize_aggressive_moves() {
+        // Scholar's attack position: White Q on h5, B on c4, attacking f7
+        // 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6
+        let fen = "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4";
+        let moves = vec![
+            "d2d3".to_string(), // quiet development
+            "h5f7".to_string(), // checkmate/capture!
+            "b1c3".to_string(), // quiet development
+        ];
+
+        let prioritized = prioritize_aggressive_moves(fen, &moves);
+        // h5f7 is a capture + check, so it must be ranked first in Aggressive mode
+        assert_eq!(prioritized[0], "h5f7");
     }
 
     fn start_pos_from_fen(fen: &Fen) -> Chess {

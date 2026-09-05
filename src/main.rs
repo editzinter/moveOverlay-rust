@@ -186,10 +186,11 @@ fn main() {
         let mut last_lines = 0;
         let mut last_time_limit_ms = 0;
         let mut last_region: Option<crate::config::BoardRegion> = None;
+        let mut last_play_mode = crate::config::PlayMode::Engine;
         let mut invalid_detection_count: u32 = 0;
 
         loop {
-            let (region, depth, lines, time_limit_ms, conf, play_as_black, fps, running) = {
+            let (region, depth, lines, time_limit_ms, conf, play_as_black, fps, running, play_mode) = {
                 let c = lock_config(&config_clone);
                 (
                     c.board_region.clone(),
@@ -200,6 +201,7 @@ fn main() {
                     c.play_as_black,
                     c.fps,
                     c.running,
+                    c.play_mode,
                 )
             };
 
@@ -209,7 +211,8 @@ fn main() {
                 || depth != last_depth
                 || lines != last_lines
                 || time_limit_ms != last_time_limit_ms
-                || region != last_region;
+                || region != last_region
+                || play_mode != last_play_mode;
 
             if state_changed {
                 tracker.reset();
@@ -220,6 +223,7 @@ fn main() {
                 last_lines = lines;
                 last_time_limit_ms = time_limit_ms;
                 last_region = region.clone();
+                last_play_mode = play_mode;
                 invalid_detection_count = 0;
                 let _ = move_tx.send(Vec::new());
             }
@@ -240,12 +244,12 @@ fn main() {
                                         if last_analyzed_fen.as_deref() != Some(&fen) {
                                             // Instantly clear stale arrows from previous position
                                             let _ = move_tx.send(Vec::new());
-                                            match sf.analyze(&fen, depth, lines, time_limit_ms) {
+                                            match sf.analyze(&fen, depth, lines, time_limit_ms, play_mode) {
                                                 Ok(raw_moves) => {
                                                     let valid_moves = crate::vision::board::validate_moves_for_side(&fen, &raw_moves, play_as_black);
                                                     println!(
-                                                        "▶ Board FEN: {} | Best moves: {:?}",
-                                                        fen, valid_moves
+                                                        "▶ [{:?}] Board FEN: {} | Best moves: {:?}",
+                                                        play_mode, fen, valid_moves
                                                     );
                                                     let _ = move_tx.send(valid_moves);
                                                     last_analyzed_fen = Some(fen);
@@ -434,7 +438,7 @@ impl eframe::App for OverlayWrapper {
         if !is_selecting {
             let win_resp = egui::Window::new("♟ MoveOverlay Control Panel")
                 .default_pos(egui::pos2(40.0, 40.0))
-                .default_size(egui::vec2(340.0, 520.0))
+                .default_size(egui::vec2(370.0, 580.0))
                 .resizable(true)
                 .collapsible(true)
                 .show(ctx, |ui| {
@@ -566,7 +570,63 @@ impl eframe::App for OverlayWrapper {
 
                     ui.add_space(6.0);
 
-                    // 1. Play Side / Perspective Selector
+                    // 1. Play Mode Selector (Segmented buttons)
+                    ui.label(
+                        egui::RichText::new("ANALYSIS MODE")
+                            .strong()
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(160, 175, 200)),
+                    );
+                    ui.horizontal(|ui| {
+                        let engine_btn = ui.selectable_label(c.play_mode == crate::config::PlayMode::Engine, "⚙ Engine");
+                        if engine_btn.clicked() {
+                            c.play_mode = crate::config::PlayMode::Engine;
+                        }
+                        let human_btn = ui.selectable_label(c.play_mode == crate::config::PlayMode::Human, "🧠 Human");
+                        if human_btn.clicked() {
+                            c.play_mode = crate::config::PlayMode::Human;
+                        }
+                        let book_btn = ui.selectable_label(c.play_mode == crate::config::PlayMode::Book, "📖 Book");
+                        if book_btn.clicked() {
+                            c.play_mode = crate::config::PlayMode::Book;
+                        }
+                        let agg_btn = ui.selectable_label(c.play_mode == crate::config::PlayMode::Aggressive, "⚔ Aggressive");
+                        if agg_btn.clicked() {
+                            c.play_mode = crate::config::PlayMode::Aggressive;
+                        }
+                    });
+
+                    let (mode_desc, desc_color) = match c.play_mode {
+                        crate::config::PlayMode::Engine => (
+                            "Engine: Superhuman Stockfish calculations (3500+ Elo).",
+                            egui::Color32::from_rgb(100, 200, 255),
+                        ),
+                        crate::config::PlayMode::Human => (
+                            "Human: Natural, realistic play (~1950 Elo) matching human club players.",
+                            egui::Color32::from_rgb(160, 230, 130),
+                        ),
+                        crate::config::PlayMode::Book => (
+                            "Book: Instant 0 ms GM theoretical opening lines (Stockfish backup).",
+                            egui::Color32::from_rgb(255, 210, 110),
+                        ),
+                        crate::config::PlayMode::Aggressive => (
+                            "Aggressive: High-initiative sharp tactical moves (checks & captures).",
+                            egui::Color32::from_rgb(255, 130, 130),
+                        ),
+                    };
+
+                    ui.label(
+                        egui::RichText::new(mode_desc)
+                            .italics()
+                            .size(10.5)
+                            .color(desc_color),
+                    );
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    // 2. Play Side / Perspective Selector
                     ui.label(
                         egui::RichText::new("PLAYING PERSPECTIVE")
                             .strong()

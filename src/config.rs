@@ -10,9 +10,23 @@ pub struct BoardRegion {
     pub height: u32,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayMode {
+    Engine,
+    Human,
+    Book,
+    Aggressive,
+}
+
+fn default_play_mode() -> PlayMode {
+    PlayMode::Engine
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub board_region: Option<BoardRegion>,
+    #[serde(default = "default_play_mode")]
+    pub play_mode: PlayMode,
     #[serde(default = "default_stockfish_depth")]
     pub stockfish_depth: u32,
     #[serde(default = "default_stockfish_lines")]
@@ -63,6 +77,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             board_region: None,
+            play_mode: PlayMode::Engine,
             stockfish_depth: 13,
             stockfish_lines: 2,
             stockfish_time_ms: 120,
@@ -134,6 +149,7 @@ mod tests {
     #[test]
     fn test_default_config_values() {
         let cfg = AppConfig::default();
+        assert_eq!(cfg.play_mode, PlayMode::Engine);
         assert_eq!(cfg.stockfish_depth, 13);
         assert_eq!(cfg.stockfish_lines, 2);
         assert_eq!(cfg.stockfish_time_ms, 120);
@@ -152,6 +168,7 @@ mod tests {
                 width: 800,
                 height: 800,
             }),
+            play_mode: PlayMode::Human,
             play_as_black: true,
             stockfish_depth: 20,
             ..Default::default()
@@ -161,6 +178,7 @@ mod tests {
         let loaded: AppConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(loaded.board_region, cfg.board_region);
+        assert_eq!(loaded.play_mode, PlayMode::Human);
         assert!(loaded.play_as_black);
         assert_eq!(loaded.stockfish_depth, 20);
     }

@@ -6,6 +6,8 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::config::PlayMode;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -13,6 +15,7 @@ pub struct Stockfish {
     child: Child,
     stdin: ChildStdin,
     line_rx: Receiver<String>,
+    current_mode: Option<PlayMode>,
 }
 
 impl Stockfish {
@@ -58,6 +61,7 @@ impl Stockfish {
             child,
             stdin,
             line_rx,
+            current_mode: None,
         };
 
         // Initial UCI handshake
@@ -84,18 +88,59 @@ impl Stockfish {
         self.send(&format!("setoption name {} value {}", name, value))
     }
 
+    pub fn apply_mode(&mut self, mode: PlayMode) -> Result<()> {
+        if self.current_mode == Some(mode) {
+            return Ok(());
+        }
+
+        match mode {
+            PlayMode::Engine | PlayMode::Aggressive | PlayMode::Book => {
+                self.set_option("UCI_LimitStrength", "false")?;
+                self.set_option("Skill Level", "20")?;
+            }
+            PlayMode::Human => {
+                self.set_option("UCI_LimitStrength", "true")?;
+                self.set_option("UCI_Elo", "1950")?;
+            }
+        }
+
+        self.send("isready")?;
+        self.wait_for("readyok", Duration::from_secs(2))?;
+        self.current_mode = Some(mode);
+        Ok(())
+    }
+
     pub fn analyze(
         &mut self,
         fen: &str,
         depth: u32,
         lines: u32,
         time_limit_ms: u32,
+        mode: PlayMode,
     ) -> Result<Vec<String>> {
+        // Book Mode: instant theoretical lookup if position exists in opening database
+        if mode == PlayMode::Book {
+            if let Some(book_moves) = crate::engine::book::get_book_moves(fen) {
+                if !book_moves.is_empty() {
+                    let take_count = (lines.clamp(1, 5) as usize).min(book_moves.len());
+                    return Ok(book_moves[..take_count].to_vec());
+                }
+            }
+            // If out of book, smoothly fall back to Stockfish calculation below
+        }
+
+        self.apply_mode(mode)?;
+
         // Drain any stale output from previous commands
         while self.line_rx.try_recv().is_ok() {}
 
         let lines_clamped = lines.clamp(1, 5);
-        self.set_option("MultiPV", &lines_clamped.to_string())?;
+        let search_multipv = if mode == PlayMode::Aggressive {
+            lines_clamped.max(4)
+        } else {
+            lines_clamped
+        };
+        self.set_option("MultiPV", &search_multipv.to_string())?;
         self.send(&format!("position fen {}", fen))?;
         // A depth search has unbounded wall-clock time: tactical positions can
         // take orders of magnitude longer than quiet ones. Use a time budget so
@@ -174,7 +219,7 @@ impl Stockfish {
         }
 
         let mut result = Vec::new();
-        for i in 1..=lines_clamped {
+        for i in 1..=search_multipv {
             if let Some(m) = pv_map.get(&i) {
                 result.push(m.clone());
             }
@@ -184,6 +229,11 @@ impl Stockfish {
             result = pv_map.into_values().collect();
         }
 
+        if mode == PlayMode::Aggressive {
+            result = crate::vision::board::prioritize_aggressive_moves(fen, &result);
+        }
+
+        result.truncate(lines_clamped as usize);
         Ok(result)
     }
 
@@ -230,3 +280,39 @@ impl Drop for Stockfish {
         let _ = self.child.wait();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stockfish_modes_and_book() {
+        let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
+        if !exe_path.exists() {
+            return;
+        }
+
+        let mut sf = Stockfish::new(exe_path.to_str().unwrap()).expect("Stockfish should initialize");
+        let start_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+        // Book mode returns book moves directly
+        let book_moves = sf
+            .analyze(start_fen, 10, 2, 100, PlayMode::Book)
+            .expect("Book analysis should succeed");
+        assert!(!book_moves.is_empty());
+        assert!(book_moves.contains(&"e2e4".to_string()) || book_moves.contains(&"d2d4".to_string()));
+
+        // Human mode
+        let human_moves = sf
+            .analyze(start_fen, 10, 1, 100, PlayMode::Human)
+            .expect("Human analysis should succeed");
+        assert_eq!(human_moves.len(), 1);
+
+        // Engine mode
+        let engine_moves = sf
+            .analyze(start_fen, 10, 2, 100, PlayMode::Engine)
+            .expect("Engine analysis should succeed");
+        assert_eq!(engine_moves.len(), 2);
+    }
+}
+
