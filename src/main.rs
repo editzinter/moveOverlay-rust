@@ -83,6 +83,18 @@ fn get_window_client_origin(_window_title: &str) -> (i32, i32) {
     (0, 0)
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkerStatus {
+    Starting,
+    Ready,
+    MissingAssets {
+        model_missing: bool,
+        engine_missing: bool,
+        search_path: String,
+    },
+    InitError(String),
+}
+
 fn lock_config(config: &Arc<Mutex<AppConfig>>) -> std::sync::MutexGuard<'_, AppConfig> {
     config
         .lock()
@@ -103,37 +115,66 @@ fn main() {
     let initial_config = AppConfig::load();
     let config = Arc::new(Mutex::new(initial_config));
     let (move_tx, move_rx) = unbounded::<Vec<String>>();
+    let worker_status = Arc::new(Mutex::new(WorkerStatus::Starting));
 
     // Background worker thread for Vision + Stockfish Engine
     let config_clone = config.clone();
+    let worker_status_clone = worker_status.clone();
     thread::spawn(move || {
-        let model_path = AppConfig::get_asset_path("best.onnx");
+        let (mut detector, mut sf) = loop {
+            let model_path = AppConfig::get_asset_path("best.onnx");
+            let engine_path = AppConfig::get_asset_path("stockfish.exe");
+
+            let model_missing = !model_path.exists();
+            let engine_missing = !engine_path.exists();
+
+            if model_missing || engine_missing {
+                {
+                    let mut ws = worker_status_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    *ws = WorkerStatus::MissingAssets {
+                        model_missing,
+                        engine_missing,
+                        search_path: AppConfig::get_app_dir().display().to_string(),
+                    };
+                }
+                thread::sleep(Duration::from_millis(1000));
+                continue;
+            }
+
+            let d_res = Detector::new(model_path.to_str().unwrap_or("best.onnx"));
+            let sf_res = Stockfish::new(engine_path.to_str().unwrap_or("stockfish.exe"));
+
+            match (d_res, sf_res) {
+                (Ok(d), Ok(s)) => {
+                    let mut ws = worker_status_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    *ws = WorkerStatus::Ready;
+                    println!("Vision & Engine worker thread initialized and ready.");
+                    break (d, s);
+                }
+                (Err(e), _) => {
+                    eprintln!("Detector Initialization Error: {:?}", e);
+                    let mut ws = worker_status_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    *ws = WorkerStatus::InitError(format!("Vision Model Error: {}", e));
+                    thread::sleep(Duration::from_millis(2000));
+                }
+                (_, Err(e)) => {
+                    eprintln!("Stockfish Initialization Error: {:?}", e);
+                    let mut ws = worker_status_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    *ws = WorkerStatus::InitError(format!("Stockfish Error: {}", e));
+                    thread::sleep(Duration::from_millis(2000));
+                }
+            }
+        };
+
         let engine_path = AppConfig::get_asset_path("stockfish.exe");
-
-        if !model_path.exists() || !engine_path.exists() {
-            eprintln!(
-                "ERROR: Missing 'best.onnx' ({}) or 'stockfish.exe' ({}).",
-                model_path.display(),
-                engine_path.display()
-            );
-            return;
-        }
-
-        let mut detector = match Detector::new(model_path.to_str().unwrap_or("best.onnx")) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("Detector Initialization Error: {:?}", e);
-                return;
-            }
-        };
-
-        let mut sf = match Stockfish::new(engine_path.to_str().unwrap_or("stockfish.exe")) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Stockfish Initialization Error: {:?}", e);
-                return;
-            }
-        };
 
         println!("Vision & Engine worker thread running.");
 
@@ -281,6 +322,7 @@ fn main() {
 
     let config_ui = config.clone();
     let selection_ui = selection_active.clone();
+    let worker_status_ui = worker_status.clone();
     let _ = eframe::run_native(
         "♟ MoveOverlay",
         options,
@@ -296,6 +338,7 @@ fn main() {
 
             Ok(Box::new(OverlayWrapper {
                 config: config_ui,
+                worker_status: worker_status_ui,
                 move_rx,
                 current_moves: Vec::new(),
                 selection_active: selection_ui,
@@ -313,6 +356,7 @@ fn main() {
 
 struct OverlayWrapper {
     config: Arc<Mutex<AppConfig>>,
+    worker_status: Arc<Mutex<WorkerStatus>>,
     move_rx: Receiver<Vec<String>>,
     current_moves: Vec<String>,
     selection_active: Arc<AtomicBool>,
@@ -424,6 +468,102 @@ impl eframe::App for OverlayWrapper {
 
                     ui.add_space(6.0);
                     ui.separator();
+
+                    let status = self
+                        .worker_status
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone();
+
+                    match &status {
+                        WorkerStatus::Starting => {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    egui::RichText::new("Initializing vision & engine...")
+                                        .color(egui::Color32::LIGHT_GRAY)
+                                        .size(11.0),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            ui.separator();
+                        }
+                        WorkerStatus::MissingAssets {
+                            model_missing,
+                            engine_missing,
+                            search_path,
+                        } => {
+                            ui.add_space(4.0);
+                            egui::Frame::none()
+                                .fill(egui::Color32::from_rgb(45, 20, 20))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    egui::Color32::from_rgb(200, 60, 60),
+                                ))
+                                .rounding(4.0)
+                                .inner_margin(8.0)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("⚠ MISSING REQUIRED ASSETS")
+                                            .strong()
+                                            .size(11.5)
+                                            .color(egui::Color32::from_rgb(255, 120, 120)),
+                                    );
+                                    if *model_missing {
+                                        ui.label(
+                                            egui::RichText::new("• best.onnx (YOLO piece detector)")
+                                                .size(10.5)
+                                                .color(egui::Color32::from_rgb(240, 180, 180)),
+                                        );
+                                    }
+                                    if *engine_missing {
+                                        ui.label(
+                                            egui::RichText::new("• stockfish.exe (Chess engine)")
+                                                .size(10.5)
+                                                .color(egui::Color32::from_rgb(240, 180, 180)),
+                                        );
+                                    }
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        egui::RichText::new(format!("Target: {}", search_path))
+                                            .size(9.5)
+                                            .italics()
+                                            .color(egui::Color32::from_rgb(160, 160, 160)),
+                                    );
+                                });
+                            ui.add_space(4.0);
+                            ui.separator();
+                        }
+                        WorkerStatus::InitError(err) => {
+                            ui.add_space(4.0);
+                            egui::Frame::none()
+                                .fill(egui::Color32::from_rgb(45, 20, 20))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    egui::Color32::from_rgb(200, 60, 60),
+                                ))
+                                .rounding(4.0)
+                                .inner_margin(8.0)
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("⚠ INITIALIZATION ERROR")
+                                            .strong()
+                                            .size(11.5)
+                                            .color(egui::Color32::from_rgb(255, 120, 120)),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(err)
+                                            .size(10.5)
+                                            .color(egui::Color32::from_rgb(240, 180, 180)),
+                                    );
+                                });
+                            ui.add_space(4.0);
+                            ui.separator();
+                        }
+                        WorkerStatus::Ready => {}
+                    }
+
                     ui.add_space(6.0);
 
                     // 1. Play Side / Perspective Selector
@@ -537,7 +677,8 @@ impl eframe::App for OverlayWrapper {
 
                     ui.add_space(8.0);
                     // Start / Stop Main Action Button
-                    let can_start = c.board_region.is_some();
+                    let is_ready = matches!(status, WorkerStatus::Ready);
+                    let can_start = c.board_region.is_some() && is_ready;
                     if c.running {
                         let stop_btn = egui::Button::new(
                             egui::RichText::new("⏹ STOP ANALYSIS")
@@ -565,6 +706,21 @@ impl eframe::App for OverlayWrapper {
                         .min_size(egui::vec2(ui.available_width(), 34.0));
                         if ui.add_enabled(can_start, start_btn).clicked() {
                             c.running = true;
+                        }
+
+                        if !can_start {
+                            let hint = if !is_ready {
+                                "Cannot start: missing or initializing assets..."
+                            } else {
+                                "Select board region first (Press 'R')"
+                            };
+                            ui.add_space(3.0);
+                            ui.label(
+                                egui::RichText::new(hint)
+                                    .italics()
+                                    .size(10.5)
+                                    .color(egui::Color32::from_rgb(200, 160, 100)),
+                            );
                         }
                     }
                 });
