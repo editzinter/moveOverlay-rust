@@ -100,7 +100,7 @@ impl Stockfish {
             }
             PlayMode::Human => {
                 self.set_option("UCI_LimitStrength", "true")?;
-                self.set_option("UCI_Elo", "1950")?;
+                self.set_option("UCI_Elo", "1800")?;
             }
         }
 
@@ -154,6 +154,7 @@ impl Stockfish {
         ))?;
 
         let mut pv_map: BTreeMap<u32, String> = BTreeMap::new();
+        let mut best_move: Option<String> = None;
         let start_time = Instant::now();
         // Allow a small grace period for the engine to flush its final PV and
         // bestmove after the requested move time.
@@ -168,6 +169,10 @@ impl Stockfish {
                 while Instant::now() < stop_deadline {
                     if let Ok(line_str) = self.line_rx.recv_timeout(Duration::from_millis(50)) {
                         if line_str.starts_with("bestmove") {
+                            let parts: Vec<&str> = line_str.split_whitespace().collect();
+                            if parts.len() >= 2 && parts[1] != "(none)" {
+                                best_move = Some(parts[1].to_string());
+                            }
                             break;
                         }
                     } else {
@@ -188,11 +193,9 @@ impl Stockfish {
             };
 
             if line_str.starts_with("bestmove") {
-                if pv_map.is_empty() {
-                    let parts: Vec<&str> = line_str.split_whitespace().collect();
-                    if parts.len() >= 2 && parts[1] != "(none)" {
-                        pv_map.insert(1, parts[1].to_string());
-                    }
+                let parts: Vec<&str> = line_str.split_whitespace().collect();
+                if parts.len() >= 2 && parts[1] != "(none)" {
+                    best_move = Some(parts[1].to_string());
                 }
                 break;
             }
@@ -219,18 +222,43 @@ impl Stockfish {
         }
 
         let mut result = Vec::new();
-        for i in 1..=search_multipv {
-            if let Some(m) = pv_map.get(&i) {
-                result.push(m.clone());
+
+        if mode == PlayMode::Human {
+            // In Human mode, Stockfish's calibrated Elo decision is emitted in `bestmove`
+            if let Some(ref bm) = best_move {
+                result.push(bm.clone());
             }
-        }
-
-        if result.is_empty() {
-            result = pv_map.into_values().collect();
-        }
-
-        if mode == PlayMode::Aggressive {
+            for i in 1..=search_multipv {
+                if let Some(m) = pv_map.get(&i) {
+                    if !result.contains(m) {
+                        result.push(m.clone());
+                    }
+                }
+            }
+        } else if mode == PlayMode::Aggressive {
+            for i in 1..=search_multipv {
+                if let Some(m) = pv_map.get(&i) {
+                    result.push(m.clone());
+                }
+            }
+            if result.is_empty() {
+                if let Some(ref bm) = best_move {
+                    result.push(bm.clone());
+                }
+            }
             result = crate::vision::board::prioritize_aggressive_moves(fen, &result);
+        } else {
+            // Engine mode
+            for i in 1..=lines_clamped {
+                if let Some(m) = pv_map.get(&i) {
+                    result.push(m.clone());
+                }
+            }
+            if result.is_empty() {
+                if let Some(ref bm) = best_move {
+                    result.push(bm.clone());
+                }
+            }
         }
 
         result.truncate(lines_clamped as usize);

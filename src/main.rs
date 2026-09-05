@@ -205,16 +205,15 @@ fn main() {
                 )
             };
 
-            // Reset cache if any critical settings change or analysis stops
-            let state_changed = running != last_running_state
+            let mode_changed = play_mode != last_play_mode;
+            let critical_changed = running != last_running_state
                 || play_as_black != last_play_side
                 || depth != last_depth
                 || lines != last_lines
                 || time_limit_ms != last_time_limit_ms
-                || region != last_region
-                || play_mode != last_play_mode;
+                || region != last_region;
 
-            if state_changed {
+            if critical_changed {
                 tracker.reset();
                 last_analyzed_fen = None;
                 last_running_state = running;
@@ -225,6 +224,11 @@ fn main() {
                 last_region = region.clone();
                 last_play_mode = play_mode;
                 invalid_detection_count = 0;
+                let _ = move_tx.send(Vec::new());
+            } else if mode_changed {
+                // Instantly recalculate on mode change using settled board without debounce delay
+                last_analyzed_fen = None;
+                last_play_mode = play_mode;
                 let _ = move_tx.send(Vec::new());
             }
 
@@ -735,6 +739,37 @@ impl eframe::App for OverlayWrapper {
                         }
                     });
 
+                    if !self.current_moves.is_empty() {
+                        ui.add_space(4.0);
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(25, 28, 36))
+                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 58, 72)))
+                            .rounding(4.0)
+                            .inner_margin(6.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (badge_text, badge_color) = match c.play_mode {
+                                        crate::config::PlayMode::Engine => ("⚙ ENGINE", egui::Color32::from_rgb(0, 230, 118)),
+                                        crate::config::PlayMode::Human => ("🧠 HUMAN", egui::Color32::from_rgb(33, 150, 243)),
+                                        crate::config::PlayMode::Book => ("📖 BOOK", egui::Color32::from_rgb(255, 215, 0)),
+                                        crate::config::PlayMode::Aggressive => ("⚔ AGGRESSIVE", egui::Color32::from_rgb(255, 23, 68)),
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(badge_text)
+                                            .strong()
+                                            .size(11.0)
+                                            .color(badge_color),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("Suggested: {}", self.current_moves.join("  →  ")))
+                                            .strong()
+                                            .size(11.5)
+                                            .color(egui::Color32::WHITE),
+                                    );
+                                });
+                            });
+                    }
+
                     ui.add_space(8.0);
                     // Start / Stop Main Action Button
                     let is_ready = matches!(status, WorkerStatus::Ready);
@@ -926,13 +961,14 @@ impl eframe::App for OverlayWrapper {
                     }
                 } else {
                     // Live move arrows
-                    let (region, play_as_black, thickness, running) = {
+                    let (region, play_as_black, thickness, running, play_mode) = {
                         let c = lock_config(&self.config);
                         (
                             c.board_region.clone(),
                             c.play_as_black,
                             c.arrow_thickness,
                             c.running,
+                            c.play_mode,
                         )
                     };
 
@@ -943,11 +979,28 @@ impl eframe::App for OverlayWrapper {
                             let rect = crate::overlay::window::board_region_to_egui_rect(&region, win_origin, ppp);
 
                             for (i, m) in self.current_moves.iter().enumerate() {
-                                let color = match i {
-                                    0 => egui::Color32::from_rgba_unmultiplied(0, 230, 118, 240),
-                                    1 => egui::Color32::from_rgba_unmultiplied(255, 193, 7, 215),
-                                    2 => egui::Color32::from_rgba_unmultiplied(0, 229, 255, 185),
-                                    _ => egui::Color32::from_rgba_unmultiplied(186, 104, 200, 140),
+                                let color = match (play_mode, i) {
+                                    // Engine mode: High-tech Emerald / Amber / Cyan
+                                    (crate::config::PlayMode::Engine, 0) => egui::Color32::from_rgba_unmultiplied(0, 230, 118, 240),
+                                    (crate::config::PlayMode::Engine, 1) => egui::Color32::from_rgba_unmultiplied(255, 193, 7, 215),
+                                    (crate::config::PlayMode::Engine, 2) => egui::Color32::from_rgba_unmultiplied(0, 229, 255, 185),
+
+                                    // Human mode: Distinct Sky Blue / Azure / Teal
+                                    (crate::config::PlayMode::Human, 0) => egui::Color32::from_rgba_unmultiplied(33, 150, 243, 240),
+                                    (crate::config::PlayMode::Human, 1) => egui::Color32::from_rgba_unmultiplied(79, 195, 247, 215),
+                                    (crate::config::PlayMode::Human, 2) => egui::Color32::from_rgba_unmultiplied(129, 212, 250, 185),
+
+                                    // Book mode: Grandmaster Theoretical Gold / Amber
+                                    (crate::config::PlayMode::Book, 0) => egui::Color32::from_rgba_unmultiplied(255, 215, 0, 245),
+                                    (crate::config::PlayMode::Book, 1) => egui::Color32::from_rgba_unmultiplied(255, 179, 0, 215),
+                                    (crate::config::PlayMode::Book, 2) => egui::Color32::from_rgba_unmultiplied(255, 152, 0, 185),
+
+                                    // Aggressive mode: Sharp Attack Crimson / Fiery Red-Orange
+                                    (crate::config::PlayMode::Aggressive, 0) => egui::Color32::from_rgba_unmultiplied(255, 23, 68, 245),
+                                    (crate::config::PlayMode::Aggressive, 1) => egui::Color32::from_rgba_unmultiplied(255, 87, 34, 220),
+                                    (crate::config::PlayMode::Aggressive, 2) => egui::Color32::from_rgba_unmultiplied(255, 145, 0, 190),
+
+                                    (_, _) => egui::Color32::from_rgba_unmultiplied(186, 104, 200, 140),
                                 };
                                 crate::overlay::window::draw_arrow(
                                     painter,

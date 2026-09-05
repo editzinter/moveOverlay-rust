@@ -273,15 +273,26 @@ pub fn prioritize_aggressive_moves(fen_str: &str, moves: &[String]) -> Vec<Strin
         if let Ok(uci) = m_str.parse::<UciMove>() {
             if let Ok(m) = uci.to_move(&pos) {
                 if m.is_capture() {
-                    score += 30;
+                    score += 35;
                 }
                 if m.promotion().is_some() {
-                    score += 25;
+                    score += 30;
+                }
+                if let Some(from) = m.from() {
+                    let to = m.to();
+                    let is_forward = if pos.turn() == Color::White {
+                        to.rank() > from.rank()
+                    } else {
+                        to.rank() < from.rank()
+                    };
+                    if is_forward {
+                        score += 10;
+                    }
                 }
                 let mut next_pos = pos.clone();
                 next_pos.play_unchecked(&m);
                 if next_pos.is_check() {
-                    score += 35;
+                    score += 40;
                 }
             }
         }
