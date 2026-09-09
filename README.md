@@ -4,11 +4,14 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
 
 ## Features
 
-- **4 Tactical Play Modes (Chess Assist Style)**:
+- **5 Tactical Play Modes (Chess Assist Style)**:
   - **⚙ Engine Mode**: Superhuman Stockfish 17.1 deep evaluation (3500+ Elo).
-  - **🧠 Human Mode**: Natural, realistic human play (~1950 Elo) matching tournament/club players using Stockfish's UCI Elo limiter.
-  - **📖 Book Mode**: Theoretical Grandmaster opening lines with instant 0 ms reply (automatic engine fallback when out of book).
+  - **🧠 Human Mode**: Natural, realistic human play (target 1800 Elo) matching tournament/club players using Stockfish's UCI Elo limiter.
+  - **📖 Book Mode**: Theoretical Grandmaster opening lines with a direct local lookup (automatic engine fallback when out of book).
   - **⚔ Aggressive Mode**: Sharp tactical initiative prioritizing attacking strikes, checks, and captures.
+  - **♟ Gambit Mode**: Favors speculative material offers among up to 12 Stockfish candidates. Recognizes immediate sacrifices of the moved piece, accounting for captures and recaptures, and tolerates some evaluation loss for attacking chances. Uses purple arrows.
+
+
 - **Transparent Fullscreen Overlay**: High-quality arrows are rendered on a transparent layer, allowing you to interact with your chess game without interruption.
 - **AI-Driven Detection**: Uses a YOLOv8-based vision model via ONNX Runtime, leveraging GPU acceleration (DirectML/CUDA) for near-instant piece detection.
 - **Integrated Analysis**: Powered by the Stockfish 17.1 engine with dynamic MultiPV support and time budgeting.
@@ -16,6 +19,8 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
 - **Responsive Interface**: A floating control panel ensures settings remain interactive even while the overlay is in click-through mode.
 - **Anti-Capture Stealth Mode**: Excludes the overlay from screen recording and stream sharing tools (OBS, Discord, Teams).
 - **Global Hotkeys**: Effortlessly toggle between White and Black move suggestions using the `B` key, and select region using `R`.
+
+Gambit keeps the configured search time and depth limits. Its sacrifice bonus is capped (up to 3.9 pawns including a check bonus), and engine-reported forced mates retain priority. It does not force a sacrifice on every position or promise compensation: delayed sacrifices and offers outside the engine candidate set may be missed. It can play weaker moves than Engine mode.
 
 ## Installation and Setup
 

@@ -44,7 +44,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // Ruy Lopez: 3... a6 4. Ba4
     m.insert(
         "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w",
-        &["b5a4", "b5xc6"][..],
+        &["b5a4", "b5c6"][..],
     );
     // Italian Game: 1. e4 e5 2. Nf3 Nc6 3. Bc4
     m.insert(
@@ -54,7 +54,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // Scotch Game: 1. e4 e5 2. Nf3 Nc6 3. d4
     m.insert(
         "r1bqkbnr/pppp1ppp/2n5/4p3/3PP3/5N2/PPP2PPP/RNBQKB1R b",
-        &["e5xd4"][..],
+        &["e5d4"][..],
     );
 
     // Sicilian Defense: 1. e4 c5
@@ -70,7 +70,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // Open Sicilian: 2. Nf3 d6 3. d4
     m.insert(
         "rnbqkbnr/pp2pppp/3p4/2p5/3PP3/5N2/PPP2PPP/RNBQKB1R b",
-        &["c5xd4"][..],
+        &["c5d4"][..],
     );
     // Open Sicilian: 3... cxd4 4. Nxd4
     m.insert(
@@ -91,7 +91,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // French: 2. d4 d5
     m.insert(
         "rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/8/PPP2PPP/RNBQKBNR w",
-        &["b1c3", "b1d2", "e4e5", "e4xd5"][..],
+        &["b1c3", "b1d2", "e4e5", "e4d5"][..],
     );
 
     // Caro-Kann: 1. e4 c6
@@ -102,7 +102,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // Caro-Kann: 2. d4 d5
     m.insert(
         "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w",
-        &["b1c3", "e4e5", "e4xd5", "b1d2"][..],
+        &["b1c3", "e4e5", "e4d5", "b1d2"][..],
     );
 
     // --- 1. d4 openings ---
@@ -118,7 +118,7 @@ fn init_book() -> HashMap<&'static str, &'static [&'static str]> {
     // Queen's Gambit: 1. d4 d5 2. c4
     m.insert(
         "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b",
-        &["e7e6", "c7c6", "d5xc4", "g8f6"][..],
+        &["e7e6", "c7c6", "d5c4", "g8f6"][..],
     );
     // QGD: 2... e6 3. Nc3
     m.insert(
@@ -178,15 +178,32 @@ pub fn normalize_fen_for_book(fen: &str) -> String {
 
 /// Looks up grandmaster theoretical opening moves for the given position.
 pub fn get_book_moves(fen: &str) -> Option<Vec<String>> {
+    use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess};
+    let position: Chess = fen.parse::<Fen>().ok()?.into_position(CastlingMode::Standard).ok()?;
     let key = normalize_fen_for_book(fen);
     let book = BOOK.get_or_init(init_book);
-    book.get(key.as_str())
-        .map(|moves| moves.iter().map(|s| s.to_string()).collect())
+    let moves: Vec<String> = book.get(key.as_str())?.iter()
+        .filter(|s| s.parse::<UciMove>().ok().and_then(|uci| uci.to_move(&position).ok()).is_some())
+        .map(|s| s.to_string()).collect();
+    if moves.is_empty() { None } else { Some(moves) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn book_rejects_invalid_position() {
+        assert_eq!(get_book_moves("invalid"), None);
+    }
+
+    #[test]
+    fn every_book_entry_has_legal_candidates() {
+        for (key, entries) in init_book() {
+            let fen = format!("{} KQkq - 0 1", key);
+            assert_eq!(get_book_moves(&fen).unwrap(), entries, "Invalid book moves: {}", key);
+        }
+    }
 
     #[test]
     fn test_starting_position_book() {

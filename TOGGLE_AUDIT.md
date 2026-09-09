@@ -1,0 +1,26 @@
+# Play mode audit
+
+The five selectable modes are Engine, Human, Book, Aggressive, and Gambit. There are no NJ or Zoomer controls. These are mutually exclusive modes saved by Save Settings.
+
+| Mode | Actual behavior |
+| --- | --- |
+| Engine | Disables UCI strength limiting, sets Skill Level 20, and returns ranked Stockfish principal variations within the configured time and depth limits. |
+| Human | Enables UCI strength limiting with a target UCI_Elo of 1800 and uses Stockfish's selected bestmove first. This is weakened Stockfish, not a separately trained human model. |
+| Book | Looks up a small built-in opening table, returning legal candidates before truncating to the requested count. Missing positions fall back to full-strength Stockfish. |
+| Aggressive | Searches at least four Stockfish candidates and reorders them using bonuses for checks, captures, promotions, and forward moves. This is a tactical heuristic; it does not guarantee sound attacks or a different move on every position. |
+
+| Gambit | Searches 12 candidates and favors immediate material offers with a bounded evaluation bonus. Accounts for captures and recaptures; preserves engine-reported mate priority. |
+
+## Fixes
+
+- Corrected six capture entries containing invalid UCI notation (`x`), including sole-candidate Scotch and Open Sicilian entries that previously produced no arrow.
+- Validate opening moves against the full position before selecting suggestions, with engine fallback when no legal book candidates remain.
+- Discard completed search results if the selected mode changed or analysis stopped during the search.
+- Corrected the Human target and removed the literal zero-millisecond Book claim in UI/docs.
+- Replaced a silently skipped engine test with an explicitly ignored integration test that requires Stockfish when selected.
+
+## Verification
+
+`cargo test --locked -- --include-ignored`: 30 tests passed using the official Stockfish 17.1 Windows x86-64 executable. Coverage includes every stored book candidate, tactical reordering, legal moves across all five modes, repeated mode changes on an unchanged board, and out-of-book fallback after Human mode.
+
+Source tracing confirms mode clicks update shared configuration and invalidate the worker's position cache. The vision model recovered from v2.7.0 passes a load-and-inference smoke test. Full interactive screen-capture/UI operation has not been exercised. The engine executable used for testing is local and git-ignored.

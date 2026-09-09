@@ -16,6 +16,7 @@ pub enum PlayMode {
     Human,
     Book,
     Aggressive,
+    Gambit,
 }
 
 fn default_play_mode() -> PlayMode {
@@ -145,6 +146,13 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gambit_settings_roundtrip() {
+        let cfg = AppConfig { play_mode: PlayMode::Gambit, ..Default::default() };
+        let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(loaded.play_mode, PlayMode::Gambit);
+    }
 
     #[test]
     fn test_default_config_values() {

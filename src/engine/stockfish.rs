@@ -94,7 +94,7 @@ impl Stockfish {
         }
 
         match mode {
-            PlayMode::Engine | PlayMode::Aggressive | PlayMode::Book => {
+            PlayMode::Engine | PlayMode::Aggressive | PlayMode::Book | PlayMode::Gambit => {
                 self.set_option("UCI_LimitStrength", "false")?;
                 self.set_option("Skill Level", "20")?;
             }
@@ -135,7 +135,9 @@ impl Stockfish {
         while self.line_rx.try_recv().is_ok() {}
 
         let lines_clamped = lines.clamp(1, 5);
-        let search_multipv = if mode == PlayMode::Aggressive {
+        let search_multipv = if mode == PlayMode::Gambit {
+            12
+        } else if mode == PlayMode::Aggressive {
             lines_clamped.max(4)
         } else {
             lines_clamped
@@ -154,6 +156,7 @@ impl Stockfish {
         ))?;
 
         let mut pv_map: BTreeMap<u32, String> = BTreeMap::new();
+        let mut evaluations = BTreeMap::new();
         let mut best_move: Option<String> = None;
         let start_time = Instant::now();
         // Allow a small grace period for the engine to flush its final PV and
@@ -214,6 +217,19 @@ impl Stockfish {
                 if let Some(pv_part) = line_str.split(" pv ").nth(1) {
                     if let Some(first_move) = pv_part.split_whitespace().next() {
                         if first_move.len() >= 4 {
+                            let tokens: Vec<_> = line_str.split_whitespace().collect();
+                            if let Some(i) = tokens.iter().position(|s| *s == "score") {
+                                if let (Some(kind), Some(value)) = (tokens.get(i + 1), tokens.get(i + 2)) {
+                                    if let Ok(n) = value.parse::<i32>() {
+                                        let score = match *kind {
+                                            "cp" => Some(n.clamp(-80_000, 80_000)),
+                                            "mate" => Some(if n > 0 { 100_000 - n.min(999) } else { -100_000 - n.max(-999) }),
+                                            _ => None,
+                                        };
+                                        if let Some(score) = score { evaluations.insert(first_move.to_string(), score); }
+                                    }
+                                }
+                            }
                             pv_map.insert(multipv_idx, first_move.to_string());
                         }
                     }
@@ -235,7 +251,7 @@ impl Stockfish {
                     }
                 }
             }
-        } else if mode == PlayMode::Aggressive {
+        } else if matches!(mode, PlayMode::Aggressive | PlayMode::Gambit) {
             for i in 1..=search_multipv {
                 if let Some(m) = pv_map.get(&i) {
                     result.push(m.clone());
@@ -246,7 +262,11 @@ impl Stockfish {
                     result.push(bm.clone());
                 }
             }
-            result = crate::vision::board::prioritize_aggressive_moves(fen, &result);
+            result = if mode == PlayMode::Gambit {
+                crate::engine::gambit::rank(fen, &result, &evaluations)
+            } else {
+                crate::vision::board::prioritize_aggressive_moves(fen, &result)
+            };
         } else {
             // Engine mode
             for i in 1..=lines_clamped {
@@ -314,11 +334,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
     fn test_stockfish_modes_and_book() {
         let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
-        if !exe_path.exists() {
-            return;
-        }
+        assert!(exe_path.exists(), "stockfish.exe is required for this integration test");
 
         let mut sf = Stockfish::new(exe_path.to_str().unwrap()).expect("Stockfish should initialize");
         let start_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -341,6 +360,21 @@ mod tests {
             .analyze(start_fen, 10, 2, 100, PlayMode::Engine)
             .expect("Engine analysis should succeed");
         assert_eq!(engine_moves.len(), 2);
+
+        // Exercise repeated switches on the same engine and unchanged position.
+        for mode in [PlayMode::Aggressive, PlayMode::Gambit, PlayMode::Human, PlayMode::Engine, PlayMode::Book] {
+            let moves = sf.analyze(start_fen, 10, 2, 100, mode).unwrap();
+            assert!(!moves.is_empty(), "{:?} returned no moves", mode);
+            assert_eq!(crate::vision::board::validate_moves_for_side(start_fen, &moves, false), moves);
+        }
+
+        // Book misses must really invoke Stockfish, including after Human mode.
+        sf.apply_mode(PlayMode::Human).unwrap();
+        let endgame = "8/8/8/4k3/8/8/4K3/8 w - - 0 50";
+        let moves = sf.analyze(endgame, 10, 2, 100, PlayMode::Book).unwrap();
+        assert!(!moves.is_empty());
+        assert_eq!(sf.current_mode, Some(PlayMode::Book));
+        assert_eq!(crate::vision::board::validate_moves_for_side(endgame, &moves, false), moves);
     }
 }
 

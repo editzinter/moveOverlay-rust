@@ -250,6 +250,16 @@ impl Detector {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires best.onnx from the release bundle"]
+    fn release_model_loads_and_runs() {
+        let path = crate::config::AppConfig::get_asset_path("best.onnx");
+        let mut detector = super::Detector::new(path.to_str().unwrap()).unwrap();
+        let image = image::DynamicImage::new_rgb8(640, 640);
+        let detections = detector.detect(&image, 0.5).unwrap();
+        assert!(detections.iter().all(|d| d.confidence.is_finite()));
+    }
+
     use super::*;
 
     #[test]
