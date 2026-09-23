@@ -17,6 +17,7 @@ pub enum PlayMode {
     Book,
     Aggressive,
     Gambit,
+    Endurance,
 }
 
 fn default_play_mode() -> PlayMode {
@@ -152,6 +153,13 @@ mod tests {
         let cfg = AppConfig { play_mode: PlayMode::Gambit, ..Default::default() };
         let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(loaded.play_mode, PlayMode::Gambit);
+    }
+
+    #[test]
+    fn endurance_settings_roundtrip() {
+        let cfg = AppConfig { play_mode: PlayMode::Endurance, ..Default::default() };
+        let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(loaded.play_mode, PlayMode::Endurance);
     }
 
     #[test]

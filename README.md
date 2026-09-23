@@ -4,12 +4,13 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
 
 ## Features
 
-- **5 Tactical Play Modes (Chess Assist Style)**:
+- **6 Play Modes (Chess Assist Style)**:
   - **⚙ Engine Mode**: Superhuman Stockfish 17.1 deep evaluation (3500+ Elo).
   - **🧠 Human Mode**: Natural, realistic human play (target 1800 Elo) matching tournament/club players using Stockfish's UCI Elo limiter.
   - **📖 Book Mode**: Theoretical Grandmaster opening lines with a direct local lookup (automatic engine fallback when out of book).
   - **⚔ Aggressive Mode**: Sharp tactical initiative prioritizing attacking strikes, checks, and captures.
   - **♟ Gambit Mode**: Favors immediate material offers among 6–12 Stockfish candidates only when their evaluation is within 50 centipawns of the best candidate. Short search budgets use fewer candidates so each receives more analysis. Recognizes offers of the moved piece after captures and recaptures. Uses purple arrows.
+  - **⌛ Endurance Mode**: Searches 4–12 Stockfish candidates and prefers safe, quiet moves that preserve pieces and pawns, lock pawn chains, and avoid forcing an early finish. Candidates normally stay within 80 centipawns of the best evaluated move. Uses teal arrows.
 
 
 - **Transparent Fullscreen Overlay**: High-quality arrows are rendered on a transparent layer, allowing you to interact with your chess game without interruption.
@@ -21,6 +22,8 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
 - **Global Hotkeys**: Effortlessly toggle between White and Black move suggestions using the `B` key, and select region using `R`.
 
 Gambit keeps the configured search time and depth limits. A qualifying sacrifice receives a 51-centipawn ranking bonus, which is enough to prefer it over a move rated up to 50 centipawns better; forced mates retain priority. It does not force a sacrifice on every position or promise compensation: delayed sacrifices and offers outside the engine candidate set may be missed. Evaluations at short search budgets can still miss tactics.
+
+Endurance keeps the same search time and depth limits. It favors longer, less forcing play among reasonably sound candidates and prefers a longer mate when all candidates lead to forced mate. It only compares candidates with exact scores from the same completed search depth (at least depth 8); otherwise it uses Stockfish's best move. It cannot guarantee a maximum-length game: the opponent chooses their own moves, and board-image detection does not provide move history for repetition or the fifty-move rule.
 
 ## Installation and Setup
 

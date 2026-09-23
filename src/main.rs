@@ -642,12 +642,19 @@ impl eframe::App for OverlayWrapper {
                         if ui.selectable_label(c.play_mode == crate::config::PlayMode::Gambit, "♟ Gambit").clicked() {
                             c.play_mode = crate::config::PlayMode::Gambit;
                         }
+                        if ui.selectable_label(c.play_mode == crate::config::PlayMode::Endurance, "⌛ Endurance").clicked() {
+                            c.play_mode = crate::config::PlayMode::Endurance;
+                        }
                     });
 
                     let (mode_desc, desc_color) = match c.play_mode {
                         crate::config::PlayMode::Gambit => (
                             "Gambit: Prefers material offers only when Stockfish rates them near its best move.",
                             egui::Color32::from_rgb(210, 140, 255),
+                        ),
+                        crate::config::PlayMode::Endurance => (
+                            "Endurance: Prefers safe, quiet moves that preserve pawns and extend play.",
+                            egui::Color32::from_rgb(110, 220, 205),
                         ),
                         crate::config::PlayMode::Engine => (
                             "Engine: Superhuman Stockfish calculations (3500+ Elo).",
@@ -798,6 +805,7 @@ impl eframe::App for OverlayWrapper {
                                 ui.horizontal(|ui| {
                                     let (badge_text, badge_color) = match c.play_mode {
                                         crate::config::PlayMode::Gambit => ("♟ GAMBIT", egui::Color32::from_rgb(190, 100, 255)),
+                                        crate::config::PlayMode::Endurance => ("⌛ ENDURANCE", egui::Color32::from_rgb(80, 210, 190)),
                                         crate::config::PlayMode::Engine => ("⚙ ENGINE", egui::Color32::from_rgb(0, 230, 118)),
                                         crate::config::PlayMode::Human => ("🧠 HUMAN", egui::Color32::from_rgb(33, 150, 243)),
                                         crate::config::PlayMode::Book => ("📖 BOOK", egui::Color32::from_rgb(255, 215, 0)),
@@ -1030,6 +1038,7 @@ impl eframe::App for OverlayWrapper {
                             for (i, m) in self.current_moves.iter().enumerate() {
                                 let color = match (play_mode, i) {
                                     (crate::config::PlayMode::Gambit, _) => egui::Color32::from_rgba_unmultiplied(190, 100, 255, 245u8.saturating_sub((i.min(4) as u8) * 25)),
+                                    (crate::config::PlayMode::Endurance, _) => egui::Color32::from_rgba_unmultiplied(70, 220, 190, 245u8.saturating_sub((i.min(4) as u8) * 25)),
                                     // Engine mode: High-tech Emerald / Amber / Cyan
                                     (crate::config::PlayMode::Engine, 0) => egui::Color32::from_rgba_unmultiplied(0, 230, 118, 240),
                                     (crate::config::PlayMode::Engine, 1) => egui::Color32::from_rgba_unmultiplied(255, 193, 7, 215),

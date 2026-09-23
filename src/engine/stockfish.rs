@@ -8,6 +8,45 @@ use std::time::{Duration, Instant};
 
 use crate::config::PlayMode;
 
+// Stockfish can stop halfway through a MultiPV depth. Endurance only compares
+// candidates whose exact scores came from the same completed search depth.
+type EndurancePvs = BTreeMap<u32, BTreeMap<u32, (String, i32)>>;
+
+fn parse_endurance_pv(line: &str) -> Option<(u32, u32, String, i32)> {
+    let tokens: Vec<_> = line.split_whitespace().collect();
+    if tokens.first() != Some(&"info")
+        || tokens.contains(&"lowerbound")
+        || tokens.contains(&"upperbound")
+    {
+        return None;
+    }
+    let value_after = |key: &str| tokens.iter().position(|token| *token == key)
+        .and_then(|i| tokens.get(i + 1).copied());
+    let depth = value_after("depth")?.parse::<u32>().ok()?;
+    let multipv = value_after("multipv").unwrap_or("1").parse::<u32>().ok()?;
+    let score_index = tokens.iter().position(|token| *token == "score")?;
+    let raw = tokens.get(score_index + 2)?.parse::<i32>().ok()?;
+    let score = match *tokens.get(score_index + 1)? {
+        "cp" => raw.clamp(-80_000, 80_000),
+        "mate" if raw > 0 => 100_000 - raw.min(999),
+        "mate" if raw < 0 => -100_000 + raw.saturating_abs().min(999),
+        _ => return None,
+    };
+    let first_move = value_after("pv")?;
+    if first_move.len() < 4 {
+        return None;
+    }
+    Some((depth, multipv, first_move.to_string(), score))
+}
+
+fn complete_endurance_pvs(pvs: &EndurancePvs, expected: u32) -> Option<Vec<(String, i32)>> {
+    pvs.iter().rev().find_map(|(depth, lines)| {
+        (*depth >= 8 && expected > 0)
+            .then(|| (1..=expected).map(|i| lines.get(&i).cloned()).collect::<Option<Vec<_>>>())
+            .flatten()
+    })
+}
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -94,7 +133,7 @@ impl Stockfish {
         }
 
         match mode {
-            PlayMode::Engine | PlayMode::Aggressive | PlayMode::Book | PlayMode::Gambit => {
+            PlayMode::Engine | PlayMode::Aggressive | PlayMode::Book | PlayMode::Gambit | PlayMode::Endurance => {
                 self.set_option("UCI_LimitStrength", "false")?;
                 self.set_option("Skill Level", "20")?;
             }
@@ -135,10 +174,16 @@ impl Stockfish {
         while self.line_rx.try_recv().is_ok() {}
 
         let lines_clamped = lines.clamp(1, 5);
-        let search_multipv = if mode == PlayMode::Gambit {
+        let search_multipv = if mode == PlayMode::Endurance {
+            // Favor enough depth to check safety before considering style.
+            if time_limit_ms < 300 { 4 }
+            else if time_limit_ms < 700 { 6 }
+            else if time_limit_ms < 1_500 { 8 }
+            else { 12 }
+        } else if mode == PlayMode::Gambit {
             // MultiPV shares the same time budget across all candidates. At short
             // budgets, searching 12 lines leaves each evaluation too shallow
-            // to judge whether an apparent sacrifice is sound.
+            // to judge whether a stylistic alternative is sound.
             if time_limit_ms < 300 {
                 6
             } else if time_limit_ms < 700 {
@@ -166,6 +211,7 @@ impl Stockfish {
 
         let mut pv_map: BTreeMap<u32, String> = BTreeMap::new();
         let mut evaluations = BTreeMap::new();
+        let mut endurance_pvs = EndurancePvs::new();
         let mut best_move: Option<String> = None;
         let start_time = Instant::now();
         // Allow a small grace period for the engine to flush its final PV and
@@ -212,6 +258,12 @@ impl Stockfish {
                 break;
             }
 
+            if mode == PlayMode::Endurance {
+                if let Some((depth, multipv, first_move, score)) = parse_endurance_pv(&line_str) {
+                    endurance_pvs.entry(depth).or_default().insert(multipv, (first_move, score));
+                }
+            }
+
             if line_str.contains(" pv ") {
                 let multipv_idx = if let Some(mpv_pos) = line_str.find(" multipv ") {
                     line_str[mpv_pos + 9..]
@@ -232,7 +284,7 @@ impl Stockfish {
                                     if let Ok(n) = value.parse::<i32>() {
                                         let score = match *kind {
                                             "cp" => Some(n.clamp(-80_000, 80_000)),
-                                            "mate" => Some(if n > 0 { 100_000 - n.min(999) } else { -100_000 - n.max(-999) }),
+                                            "mate" => Some(if n > 0 { 100_000 - n.min(999) } else { -100_000 + n.saturating_abs().min(999) }),
                                             _ => None,
                                         };
                                         if let Some(score) = score { evaluations.insert(first_move.to_string(), score); }
@@ -260,7 +312,7 @@ impl Stockfish {
                     }
                 }
             }
-        } else if matches!(mode, PlayMode::Aggressive | PlayMode::Gambit) {
+        } else if matches!(mode, PlayMode::Aggressive | PlayMode::Gambit | PlayMode::Endurance) {
             for i in 1..=search_multipv {
                 if let Some(m) = pv_map.get(&i) {
                     result.push(m.clone());
@@ -271,10 +323,30 @@ impl Stockfish {
                     result.push(bm.clone());
                 }
             }
-            result = if mode == PlayMode::Gambit {
-                crate::engine::gambit::rank(fen, &result, &evaluations)
-            } else {
-                crate::vision::board::prioritize_aggressive_moves(fen, &result)
+            result = match mode {
+                PlayMode::Gambit => crate::engine::gambit::rank(fen, &result, &evaluations),
+                PlayMode::Endurance => {
+                    use shakmaty::{fen::Fen, CastlingMode, Chess, Position};
+                    let legal_count = fen.parse::<Fen>().ok()
+                        .and_then(|f| f.into_position::<Chess>(CastlingMode::Standard).ok())
+                        .map(|p| p.legal_moves().len() as u32)
+                        .unwrap_or(search_multipv);
+                    let expected = search_multipv.min(legal_count);
+                    if let Some(snapshot) = complete_endurance_pvs(&endurance_pvs, expected) {
+                        let candidates: Vec<String> = snapshot.iter().map(|(m, _)| m.clone()).collect();
+                        if best_move.as_ref().is_some_and(|bm| !candidates.contains(bm)) {
+                            // A later, partial depth found a new best move. Trust it.
+                            best_move.clone().into_iter().collect()
+                        } else {
+                            let scores = snapshot.into_iter().collect();
+                            crate::engine::endurance::rank(fen, &candidates, &scores)
+                        }
+                    } else {
+                        // No comparable candidate scores: use Stockfish's best move.
+                        best_move.clone().into_iter().chain(result.into_iter().take(1)).take(1).collect()
+                    }
+                }
+                _ => crate::vision::board::prioritize_aggressive_moves(fen, &result),
             };
         } else {
             // Engine mode
@@ -343,6 +415,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn endurance_uses_only_exact_scores_from_completed_depth() {
+        let mut pvs = EndurancePvs::new();
+        for info in [
+            "info depth 8 multipv 1 score cp 25 pv e2e4 e7e5",
+            "info depth 8 multipv 2 score cp 15 pv d2d4 d7d5",
+            "info depth 9 multipv 1 score cp 40 pv g1f3 d7d5",
+            "info depth 9 multipv 2 score cp 5 lowerbound pv c2c4 e7e5",
+        ] {
+            if let Some((depth, multipv, m, score)) = parse_endurance_pv(info) {
+                pvs.entry(depth).or_default().insert(multipv, (m, score));
+            }
+        }
+        assert_eq!(complete_endurance_pvs(&pvs, 2), Some(vec![("e2e4".into(), 25), ("d2d4".into(), 15)]));
+        assert!(complete_endurance_pvs(&pvs, 3).is_none());
+    }
+
+    #[test]
+    fn shallow_or_bounded_endurance_scores_are_not_used() {
+        assert!(parse_endurance_pv("info depth 9 multipv 1 score cp 40 upperbound pv e2e4").is_none());
+        let mut pvs = EndurancePvs::new();
+        pvs.entry(7).or_default().insert(1, ("e2e4".into(), 20));
+        assert!(complete_endurance_pvs(&pvs, 1).is_none());
+    }
+
+    #[test]
     #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
     fn test_stockfish_modes_and_book() {
         let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
@@ -371,7 +468,7 @@ mod tests {
         assert_eq!(engine_moves.len(), 2);
 
         // Exercise repeated switches on the same engine and unchanged position.
-        for mode in [PlayMode::Aggressive, PlayMode::Gambit, PlayMode::Human, PlayMode::Engine, PlayMode::Book] {
+        for mode in [PlayMode::Aggressive, PlayMode::Gambit, PlayMode::Endurance, PlayMode::Human, PlayMode::Engine, PlayMode::Book] {
             let moves = sf.analyze(start_fen, 10, 2, 100, mode).unwrap();
             assert!(!moves.is_empty(), "{:?} returned no moves", mode);
             assert_eq!(crate::vision::board::validate_moves_for_side(start_fen, &moves, false), moves);

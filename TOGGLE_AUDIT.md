@@ -1,6 +1,6 @@
 # Play mode audit
 
-The five selectable modes are Engine, Human, Book, Aggressive, and Gambit. There are no NJ or Zoomer controls. These are mutually exclusive modes saved by Save Settings.
+The six selectable modes are Engine, Human, Book, Aggressive, Gambit, and Endurance. These are mutually exclusive modes saved by Save Settings.
 
 | Mode | Actual behavior |
 | --- | --- |
@@ -9,6 +9,7 @@ The five selectable modes are Engine, Human, Book, Aggressive, and Gambit. There
 | Book | Looks up a small built-in opening table, returning legal candidates before truncating to the requested count. Missing positions fall back to full-strength Stockfish. |
 | Aggressive | Searches at least four Stockfish candidates and reorders them using bonuses for checks, captures, promotions, and forward moves. This is a tactical heuristic; it does not guarantee sound attacks or a different move on every position. |
 | Gambit | Searches 6–12 candidates depending on the time budget and favors immediate material offers only when Stockfish rates them within 50 centipawns of its best candidate. Accounts for captures and recaptures; preserves engine-reported mate priority. |
+| Endurance | Searches 4–12 candidates depending on the time budget. It compares exact evaluations from the same completed depth (at least 8), rejects large evaluation losses, and favors quiet moves, preserved material, pawn locks, and fewer immediate exchanges. If scores are incomplete or shallow, it uses Stockfish's best move. |
 
 ## Fixes
 
@@ -22,6 +23,6 @@ The five selectable modes are Engine, Human, Book, Aggressive, and Gambit. There
 
 ## Verification
 
-`cargo test --locked -- --include-ignored`: 30 tests passed using the official Stockfish 17.1 Windows x86-64 executable. Coverage includes every stored book candidate, tactical reordering, legal moves across all five modes, repeated mode changes on an unchanged board, and out-of-book fallback after Human mode.
+`cargo test --locked -- --include-ignored`: all 40 tests passed with the bundled Stockfish executable and vision model. Coverage includes saved settings, Endurance ranking and exact-score parsing, book legality, legal moves across all six modes, repeated mode changes, overlay geometry, and a vision-model load/inference smoke test.
 
-Source tracing confirms mode clicks update shared configuration and invalidate the worker's position cache. The vision model recovered from v2.7.0 passes a load-and-inference smoke test. Full interactive screen-capture/UI operation has not been exercised. The engine executable used for testing is local and git-ignored.
+Source tracing confirms mode clicks update shared configuration and invalidate the worker's position cache. Full interactive screen-capture/UI operation has not been exercised. The engine and model used for testing are local and git-ignored.
