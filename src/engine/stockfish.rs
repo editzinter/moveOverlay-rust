@@ -136,7 +136,16 @@ impl Stockfish {
 
         let lines_clamped = lines.clamp(1, 5);
         let search_multipv = if mode == PlayMode::Gambit {
-            12
+            // MultiPV shares the same time budget across all candidates. At short
+            // budgets, searching 12 lines leaves each evaluation too shallow
+            // to judge whether an apparent sacrifice is sound.
+            if time_limit_ms < 300 {
+                6
+            } else if time_limit_ms < 700 {
+                8
+            } else {
+                12
+            }
         } else if mode == PlayMode::Aggressive {
             lines_clamped.max(4)
         } else {

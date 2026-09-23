@@ -86,7 +86,7 @@ fn get_window_client_origin(_window_title: &str) -> (i32, i32) {
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkerStatus {
     Starting,
-    Ready,
+    Ready { detector_backend: &'static str },
     MissingAssets {
         model_missing: bool,
         engine_missing: bool,
@@ -151,7 +151,7 @@ fn main() {
                     let mut ws = worker_status_clone
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    *ws = WorkerStatus::Ready;
+                    *ws = WorkerStatus::Ready { detector_backend: d.backend() };
                     println!("Vision & Engine worker thread initialized and ready.");
                     break (d, s);
                 }
@@ -185,11 +185,15 @@ fn main() {
         let mut last_depth = 0;
         let mut last_lines = 0;
         let mut last_time_limit_ms = 0;
+        let mut last_conf = -1.0f32;
         let mut last_region: Option<crate::config::BoardRegion> = None;
         let mut last_play_mode = crate::config::PlayMode::Engine;
         let mut invalid_detection_count: u32 = 0;
+        let mut last_frame: Option<(u32, u32, Vec<u8>)> = None;
+        let mut last_frame_confirmed = false;
 
         loop {
+            let loop_start = std::time::Instant::now();
             let (region, depth, lines, time_limit_ms, conf, play_as_black, fps, running, play_mode) = {
                 let c = lock_config(&config_clone);
                 (
@@ -205,46 +209,62 @@ fn main() {
                 )
             };
 
-            let mode_changed = play_mode != last_play_mode;
-            let critical_changed = running != last_running_state
+            let board_source_changed = running != last_running_state
                 || play_as_black != last_play_side
+                || region != last_region;
+            let analysis_changed = play_mode != last_play_mode
                 || depth != last_depth
                 || lines != last_lines
                 || time_limit_ms != last_time_limit_ms
-                || region != last_region;
+                || conf != last_conf;
 
-            if critical_changed {
+            if board_source_changed {
                 tracker.reset();
+                invalid_detection_count = 0;
+                last_frame = None;
+                last_frame_confirmed = false;
+            }
+            if board_source_changed || analysis_changed {
                 last_analyzed_fen = None;
+                last_frame_confirmed = false;
                 last_running_state = running;
                 last_play_side = play_as_black;
                 last_depth = depth;
                 last_lines = lines;
                 last_time_limit_ms = time_limit_ms;
+                last_conf = conf;
                 last_region = region.clone();
-                last_play_mode = play_mode;
-                invalid_detection_count = 0;
-                let _ = move_tx.send(Vec::new());
-            } else if mode_changed {
-                // Instantly recalculate on mode change using settled board without debounce delay
-                last_analyzed_fen = None;
                 last_play_mode = play_mode;
                 let _ = move_tx.send(Vec::new());
             }
 
             if running {
-                if let Some(r) = region {
+                if let Some(ref r) = region {
                     if r.width > 0 && r.height > 0 {
                         let capture_result = capture_region(r.x, r.y, r.width, r.height);
 
                         if let Ok(img) = capture_result {
-                            if let Ok(detections) = detector.detect(&img, conf) {
+                            let pixels = img.as_bytes();
+                            let frame_unchanged = last_frame.as_ref().is_some_and(|(w, h, bytes)| {
+                                *w == img.width() && *h == img.height() && bytes == pixels
+                            });
+                            let detections = if frame_unchanged && last_frame_confirmed {
+                                None
+                            } else {
+                                last_frame = Some((img.width(), img.height(), pixels.to_vec()));
+                                last_frame_confirmed = false;
+                                detector.detect(&img, conf).ok()
+                            };
+                            if let Some(detections) = detections {
                                 if let Some(board) = crate::vision::board::detections_to_board(
                                     &detections,
                                     play_as_black,
                                 ) {
                                     invalid_detection_count = 0;
                                     if let Some(fen) = tracker.update(board, play_as_black) {
+                                        if last_analyzed_fen.as_deref() == Some(&fen) {
+                                            last_frame_confirmed = true;
+                                        }
                                         if last_analyzed_fen.as_deref() != Some(&fen) {
                                             // Instantly clear stale arrows from previous position
                                             let _ = move_tx.send(Vec::new());
@@ -252,7 +272,15 @@ fn main() {
                                                 Ok(raw_moves) => {
                                                     // A click during the blocking search invalidates its result.
                                                     let current = lock_config(&config_clone);
-                                                    if current.play_mode != play_mode || !current.running {
+                                                    if current.play_mode != play_mode
+                                                        || current.stockfish_depth != depth
+                                                        || current.stockfish_lines != lines
+                                                        || current.stockfish_time_ms != time_limit_ms
+                                                        || current.confidence_threshold != conf
+                                                        || current.play_as_black != play_as_black
+                                                        || current.board_region != region
+                                                        || !current.running
+                                                    {
                                                         continue;
                                                     }
                                                     let valid_moves = crate::vision::board::validate_moves_for_side(&fen, &raw_moves, play_as_black);
@@ -262,6 +290,7 @@ fn main() {
                                                     );
                                                     let _ = move_tx.send(valid_moves);
                                                     last_analyzed_fen = Some(fen);
+                                                    last_frame_confirmed = true;
                                                 }
                                                 Err(e) => {
                                                     eprintln!(
@@ -293,7 +322,8 @@ fn main() {
                 }
             }
 
-            thread::sleep(Duration::from_millis(1000 / fps.clamp(1, 30) as u64));
+            let scan_interval = Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 30)));
+            thread::sleep(scan_interval.saturating_sub(loop_start.elapsed()));
         }
     });
 
@@ -574,7 +604,13 @@ impl eframe::App for OverlayWrapper {
                             ui.add_space(4.0);
                             ui.separator();
                         }
-                        WorkerStatus::Ready => {}
+                        WorkerStatus::Ready { detector_backend } => {
+                            ui.label(
+                                egui::RichText::new(format!("Vision: {}", detector_backend))
+                                    .size(10.5)
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                        }
                     }
 
                     ui.add_space(6.0);
@@ -610,7 +646,7 @@ impl eframe::App for OverlayWrapper {
 
                     let (mode_desc, desc_color) = match c.play_mode {
                         crate::config::PlayMode::Gambit => (
-                            "Gambit: Favors speculative material sacrifices and attacking chances.",
+                            "Gambit: Prefers material offers only when Stockfish rates them near its best move.",
                             egui::Color32::from_rgb(210, 140, 255),
                         ),
                         crate::config::PlayMode::Engine => (
@@ -677,7 +713,7 @@ impl eframe::App for OverlayWrapper {
                             .size(11.0)
                             .color(egui::Color32::from_rgb(160, 175, 200)),
                     );
-                    ui.add(egui::Slider::new(&mut c.stockfish_depth, 1..=30).text("Search Depth"));
+                    ui.add(egui::Slider::new(&mut c.stockfish_depth, 1..=30).text("Depth Limit"));
                     ui.add(
                         egui::Slider::new(&mut c.stockfish_lines, 1..=5).text("Suggested Lines"),
                     );
@@ -685,7 +721,7 @@ impl eframe::App for OverlayWrapper {
                         egui::Slider::new(&mut c.stockfish_time_ms, 10..=2_000)
                             .text("Search Budget (ms)"),
                     );
-                    ui.add(egui::Slider::new(&mut c.fps, 1..=30).text("Scan Rate (FPS)"));
+                    ui.add(egui::Slider::new(&mut c.fps, 1..=30).text("Maximum Scan FPS"));
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -785,7 +821,7 @@ impl eframe::App for OverlayWrapper {
 
                     ui.add_space(8.0);
                     // Start / Stop Main Action Button
-                    let is_ready = matches!(status, WorkerStatus::Ready);
+                    let is_ready = matches!(status, WorkerStatus::Ready { .. });
                     let can_start = c.board_region.is_some() && is_ready;
                     if c.running {
                         let stop_btn = egui::Button::new(

@@ -8,14 +8,15 @@ The five selectable modes are Engine, Human, Book, Aggressive, and Gambit. There
 | Human | Enables UCI strength limiting with a target UCI_Elo of 1800 and uses Stockfish's selected bestmove first. This is weakened Stockfish, not a separately trained human model. |
 | Book | Looks up a small built-in opening table, returning legal candidates before truncating to the requested count. Missing positions fall back to full-strength Stockfish. |
 | Aggressive | Searches at least four Stockfish candidates and reorders them using bonuses for checks, captures, promotions, and forward moves. This is a tactical heuristic; it does not guarantee sound attacks or a different move on every position. |
-
-| Gambit | Searches 12 candidates and favors immediate material offers with a bounded evaluation bonus. Accounts for captures and recaptures; preserves engine-reported mate priority. |
+| Gambit | Searches 6–12 candidates depending on the time budget and favors immediate material offers only when Stockfish rates them within 50 centipawns of its best candidate. Accounts for captures and recaptures; preserves engine-reported mate priority. |
 
 ## Fixes
 
 - Corrected six capture entries containing invalid UCI notation (`x`), including sole-candidate Scotch and Open Sicilian entries that previously produced no arrow.
 - Validate opening moves against the full position before selecting suggestions, with engine fallback when no legal book candidates remain.
 - Discard completed search results if the selected mode changed or analysis stopped during the search.
+- Discard completed searches when depth, line count, time budget, side, or board region changes. Search-setting changes reuse the settled board and trigger a fresh analysis on the next scan.
+- Skip YOLO inference when a previously analyzed board frame is pixel identical; benchmark CUDA against CPU at startup and display the selected provider.
 - Corrected the Human target and removed the literal zero-millisecond Book claim in UI/docs.
 - Replaced a silently skipped engine test with an explicitly ignored integration test that requires Stockfish when selected.
 

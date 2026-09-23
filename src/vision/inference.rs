@@ -2,10 +2,12 @@ use anyhow::Result;
 use image::DynamicImage;
 use ndarray::Array4;
 use ort::session::Session;
+use std::time::Instant;
 
 pub struct Detector {
     session: Session,
     input_buffer: Vec<f32>,
+    backend: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -16,33 +18,67 @@ pub struct Detection {
 }
 
 impl Detector {
+    fn benchmark_session(session: &mut Session) -> Result<f64> {
+        let mut durations = Vec::with_capacity(3);
+        for trial in 0..4 {
+            let input = ort::value::Tensor::from_array(Array4::<f32>::zeros((1, 3, 640, 640)))?;
+            let start = Instant::now();
+            let _ = session.run(ort::inputs!["images" => input])?;
+            if trial > 0 {
+                durations.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        durations.sort_by(|a, b| a.total_cmp(b));
+        Ok(durations[1])
+    }
+
     pub fn new(model_path: &str) -> Result<Self> {
         println!("Attempting to create ONNX session with CUDA (NVIDIA)...");
 
-        // Try CUDA (maximum speed for NVIDIA GPUs)
-        let cuda_session = Session::builder()
-            .and_then(|b| {
-                b.with_execution_providers([
-                    ort::execution_providers::CUDAExecutionProvider::default().build(),
-                ])
-            })
-            .and_then(|b| b.commit_from_file(model_path));
+        // Registration must fail loudly. ONNX Runtime otherwise silently runs
+        // on CPU even when CUDA libraries are missing.
+        let cuda_session: Result<Session> = (|| {
+            let session = Session::builder()?
+                .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()])
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                .commit_from_file(model_path)?;
+            Ok(session)
+        })();
 
-        let session = match cuda_session {
-            Ok(s) => {
-                println!("CUDA execution provider loaded successfully!");
-                s
+        let (session, backend) = match cuda_session {
+            Ok(mut cuda) => {
+                let mut cpu = Session::builder()?.commit_from_file(model_path)?;
+                let cuda_ms = Self::benchmark_session(&mut cuda);
+                let cpu_ms = Self::benchmark_session(&mut cpu)?;
+                match cuda_ms {
+                    Ok(ms) if ms < cpu_ms * 0.9 => {
+                        println!("Vision benchmark: CUDA {ms:.1} ms, CPU {cpu_ms:.1} ms; using CUDA.");
+                        (cuda, "CUDA")
+                    }
+                    Ok(ms) => {
+                        println!("Vision benchmark: CUDA {ms:.1} ms, CPU {cpu_ms:.1} ms; using CPU.");
+                        (cpu, "CPU")
+                    }
+                    Err(e) => {
+                        eprintln!("CUDA inference failed ({e}); using CPU.");
+                        (cpu, "CPU")
+                    }
+                }
             }
             Err(e) => {
                 println!("CUDA unavailable ({:?}), trying CPU fallback...", e);
-                Session::builder()?.commit_from_file(model_path)?
+                (Session::builder()?.commit_from_file(model_path)?, "CPU")
             }
         };
 
         println!("ONNX Session created successfully");
         const NUM_PIXELS: usize = 640 * 640;
         let input_buffer = vec![0.0f32; 3 * NUM_PIXELS];
-        Ok(Self { session, input_buffer })
+        Ok(Self { session, input_buffer, backend })
+    }
+
+    pub fn backend(&self) -> &'static str {
+        self.backend
     }
 
     pub fn detect(&mut self, img: &DynamicImage, conf_threshold: f32) -> Result<Vec<Detection>> {

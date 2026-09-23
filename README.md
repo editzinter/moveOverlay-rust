@@ -9,23 +9,23 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
   - **🧠 Human Mode**: Natural, realistic human play (target 1800 Elo) matching tournament/club players using Stockfish's UCI Elo limiter.
   - **📖 Book Mode**: Theoretical Grandmaster opening lines with a direct local lookup (automatic engine fallback when out of book).
   - **⚔ Aggressive Mode**: Sharp tactical initiative prioritizing attacking strikes, checks, and captures.
-  - **♟ Gambit Mode**: Favors speculative material offers among up to 12 Stockfish candidates. Recognizes immediate sacrifices of the moved piece, accounting for captures and recaptures, and tolerates some evaluation loss for attacking chances. Uses purple arrows.
+  - **♟ Gambit Mode**: Favors immediate material offers among 6–12 Stockfish candidates only when their evaluation is within 50 centipawns of the best candidate. Short search budgets use fewer candidates so each receives more analysis. Recognizes offers of the moved piece after captures and recaptures. Uses purple arrows.
 
 
 - **Transparent Fullscreen Overlay**: High-quality arrows are rendered on a transparent layer, allowing you to interact with your chess game without interruption.
-- **AI-Driven Detection**: Uses a YOLOv8-based vision model via ONNX Runtime, leveraging GPU acceleration (DirectML/CUDA) for near-instant piece detection.
+- **AI-Driven Detection**: Uses a YOLOv8-based vision model via ONNX Runtime. It uses CUDA when available and faster than CPU, and otherwise falls back to CPU. The selected provider is shown in the control panel.
 - **Integrated Analysis**: Powered by the Stockfish 17.1 engine with dynamic MultiPV support and time budgeting.
 - **Intuitive Selection Tool**: A draggable selection interface allows you to quickly define the chessboard area on any screen (Shortcut: `R`).
 - **Responsive Interface**: A floating control panel ensures settings remain interactive even while the overlay is in click-through mode.
 - **Anti-Capture Stealth Mode**: Excludes the overlay from screen recording and stream sharing tools (OBS, Discord, Teams).
 - **Global Hotkeys**: Effortlessly toggle between White and Black move suggestions using the `B` key, and select region using `R`.
 
-Gambit keeps the configured search time and depth limits. Its sacrifice bonus is capped (up to 3.9 pawns including a check bonus), and engine-reported forced mates retain priority. It does not force a sacrifice on every position or promise compensation: delayed sacrifices and offers outside the engine candidate set may be missed. It can play weaker moves than Engine mode.
+Gambit keeps the configured search time and depth limits. A qualifying sacrifice receives a 51-centipawn ranking bonus, which is enough to prefer it over a move rated up to 50 centipawns better; forced mates retain priority. It does not force a sacrifice on every position or promise compensation: delayed sacrifices and offers outside the engine candidate set may be missed. Evaluations at short search budgets can still miss tactics.
 
 ## Installation and Setup
 
 ### Download the Complete Bundle
-The easiest way to get started is to download the latest **[Release](https://github.com/editzinter/moveOverlay-rust/releases/latest)**. This ZIP file contains the pre-compiled application, the trained AI model (`best.onnx`), and the optimized Stockfish engine.
+The easiest way to get started is to download the latest **[Release](https://github.com/editzinter/moveOverlay-rust/releases/latest)**. This ZIP file contains the pre-compiled application, the trained AI model (`best.onnx`), the Stockfish engine, and the ONNX CUDA provider DLLs. CUDA also requires compatible NVIDIA CUDA and cuDNN runtime libraries on the system; the application uses CPU when they are unavailable or slower.
 
 ### Building from Source
 If you prefer to build the project yourself, ensure you have the [Rust toolchain](https://rustup.rs/) installed.
@@ -45,15 +45,13 @@ If you prefer to build the project yourself, ensure you have the [Rust toolchain
 
 1. **Launch**: Open the application. You will see a transparent overlay and a settings window.
 2. **Select the Board**: Click the "Select Board Region" button or press the **R** key. Your screen will dim, allowing you to click and drag a rectangle over the chessboard.
-3. **Configure Settings**: Use the settings window to adjust Stockfish depth, the number of suggested lines, and scan frequency.
+3. **Configure Settings**: Use the settings window to adjust Stockfish depth, the number of suggested lines, and scan frequency. Depth is a ceiling; the search time budget can stop Stockfish before that depth. Maximum Scan FPS is a cap; actual scan speed also depends on vision inference time.
 4. **Start Analysis**: Click the **START** button. The application will begin scanning the board and drawing arrows for the best moves.
 5. **Toggle Side**: Press the **B** key at any time to switch between analysis for White and Black pieces.
 
 ## Technical Performance
 
-The system is designed to maximize your hardware's potential:
-- **Vision Inference**: Offloaded to the **GPU** via DirectML, ensuring the scan does not slow down your system.
-- **Engine Calculation**: Stockfish is configured to use 8 CPU threads and 256MB of hash memory for fast, accurate evaluations.
+The detector benchmarks CUDA and CPU when CUDA initializes, then selects the faster provider. CUDA requires its runtime libraries; CPU inference may use substantial CPU time. Once a valid position is analyzed, identical captured frames skip YOLO inference. The scan rate control limits how often a new scan starts, but cannot make the model run faster when the board changes. Stockfish uses up to 8 CPU threads and 128 MB of hash memory.
 
 ## Safety and Fair Play
 
