@@ -10,7 +10,7 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
   - **📖 Book Mode**: Theoretical Grandmaster opening lines with a direct local lookup (automatic engine fallback when out of book).
   - **⚔ Aggressive Mode**: Sharp tactical initiative prioritizing attacking strikes, checks, and captures.
   - **♟ Gambit Mode**: Favors immediate material offers among 6–12 Stockfish candidates only when their evaluation is within 50 centipawns of the best candidate. Short search budgets use fewer candidates so each receives more analysis. Recognizes offers of the moved piece after captures and recaptures. Uses purple arrows.
-  - **⌛ Endurance Mode**: Searches 4–12 Stockfish candidates and prefers safe, quiet moves that preserve pieces and pawns, lock pawn chains, and avoid forcing an early finish. Candidates normally stay within 80 centipawns of the best evaluated move. Uses teal arrows.
+  - **⌛ Endurance Mode**: Searches 4–12 Stockfish candidates and prefers moves that keep the game going. It avoids immediate endings and material offers, preserves pieces and pawns, favors useful pawn locks, and keeps a pawn advance available when possible. It may give up a winning advantage to reach a playable, more balanced position. Uses teal arrows.
 
 
 - **Transparent Fullscreen Overlay**: High-quality arrows are rendered on a transparent layer, allowing you to interact with your chess game without interruption.
@@ -23,7 +23,7 @@ MoveOverlay-Rust is a high-performance tool designed to provide real-time chess 
 
 Gambit keeps the configured search time and depth limits. A qualifying sacrifice receives a 51-centipawn ranking bonus, which is enough to prefer it over a move rated up to 50 centipawns better; forced mates retain priority. It does not force a sacrifice on every position or promise compensation: delayed sacrifices and offers outside the engine candidate set may be missed. Evaluations at short search budgets can still miss tactics.
 
-Endurance keeps the same search time and depth limits. It favors longer, less forcing play among reasonably sound candidates and prefers a longer mate when all candidates lead to forced mate. It only compares candidates with exact scores from the same completed search depth (at least depth 8); otherwise it uses Stockfish's best move. It cannot guarantee a maximum-length game: the opponent chooses their own moves, and board-image detection does not provide move history for repetition or the fifty-move rule.
+Endurance keeps the configured search time and depth limits. When Stockfish evaluates multiple candidates to the same completed depth (at least depth 8), it considers a move playable at -0.50 pawns or better even if a faster win is available. If already worse, it stays within 0.80 pawns of Stockfish's best defense. It removes clearly losing alternatives from the arrows, avoids moves that immediately end the game, and delays a forced mate when all evaluated lines lose. If comparable scores are unavailable, it uses Stockfish's best move. This is a heuristic, not a guarantee of the longest possible game: the opponent controls their moves and clock, and board-image detection does not provide reliable repetition or fifty-move history.
 
 ## Installation and Setup
 
@@ -55,6 +55,8 @@ If you prefer to build the project yourself, ensure you have the [Rust toolchain
 ## Technical Performance
 
 The detector benchmarks CUDA and CPU when CUDA initializes, then selects the faster provider. CUDA requires its runtime libraries; CPU inference may use substantial CPU time. Once a valid position is analyzed, identical captured frames skip YOLO inference. The scan rate control limits how often a new scan starts, but cannot make the model run faster when the board changes. Stockfish uses up to 8 CPU threads and 128 MB of hash memory.
+
+Suggestions refresh automatically on an unchanged board. If screen capture, vision inference, or Stockfish fails, the control panel shows a recovery message and the worker attempts to recover automatically. An empty engine response on a playable board is retried rather than cached as a finished analysis. On Windows, the running overlay also periodically restores its topmost position.
 
 ## Safety and Fair Play
 

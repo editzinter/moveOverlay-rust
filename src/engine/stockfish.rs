@@ -213,6 +213,7 @@ impl Stockfish {
         let mut evaluations = BTreeMap::new();
         let mut endurance_pvs = EndurancePvs::new();
         let mut best_move: Option<String> = None;
+        let mut saw_bestmove = false;
         let start_time = Instant::now();
         // Allow a small grace period for the engine to flush its final PV and
         // bestmove after the requested move time.
@@ -225,17 +226,23 @@ impl Stockfish {
                 // Wait briefly for the bestmove response after stopping
                 let stop_deadline = Instant::now() + Duration::from_millis(300);
                 while Instant::now() < stop_deadline {
-                    if let Ok(line_str) = self.line_rx.recv_timeout(Duration::from_millis(50)) {
-                        if line_str.starts_with("bestmove") {
+                    match self.line_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(line_str) if line_str.starts_with("bestmove") => {
                             let parts: Vec<&str> = line_str.split_whitespace().collect();
+                            saw_bestmove = true;
                             if parts.len() >= 2 && parts[1] != "(none)" {
                                 best_move = Some(parts[1].to_string());
                             }
                             break;
                         }
-                    } else {
-                        break;
+                        Ok(_) | Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                            return Err(anyhow!("Stockfish output stream closed during search"));
+                        }
                     }
+                }
+                if !saw_bestmove {
+                    return Err(anyhow!("Stockfish did not respond to stop"));
                 }
                 break;
             }
@@ -247,11 +254,14 @@ impl Stockfish {
             {
                 Ok(l) => l,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!("Stockfish output stream closed during search"));
+                }
             };
 
             if line_str.starts_with("bestmove") {
                 let parts: Vec<&str> = line_str.split_whitespace().collect();
+                saw_bestmove = true;
                 if parts.len() >= 2 && parts[1] != "(none)" {
                     best_move = Some(parts[1].to_string());
                 }
@@ -363,6 +373,13 @@ impl Stockfish {
         }
 
         result.truncate(lines_clamped as usize);
+        if !saw_bestmove {
+            return Err(anyhow!("Stockfish search ended without a bestmove"));
+        }
+        if result.is_empty() && best_move.is_some() {
+            // A partial PV can be malformed or absent; bestmove is authoritative.
+            result.push(best_move.unwrap());
+        }
         Ok(result)
     }
 
@@ -481,6 +498,36 @@ mod tests {
         assert!(!moves.is_empty());
         assert_eq!(sf.current_mode, Some(PlayMode::Book));
         assert_eq!(crate::vision::board::validate_moves_for_side(endgame, &moves, false), moves);
+    }
+
+    #[test]
+    #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
+    fn repeated_short_searches_still_return_moves() {
+        let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
+        let mut sf = Stockfish::new(exe_path.to_str().unwrap()).unwrap();
+        let positions = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+        ];
+        for i in 0..300 {
+            let mode = if i % 2 == 0 { PlayMode::Engine } else { PlayMode::Endurance };
+            let moves = sf.analyze(positions[i % 2], 12, 2, 30, mode).unwrap();
+            assert!(!moves.is_empty(), "search {i} returned no moves");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
+    fn endurance_live_search_avoids_an_immediate_finish() {
+        use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Position};
+        let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
+        let mut sf = Stockfish::new(exe_path.to_str().unwrap()).unwrap();
+        let fen = "7k/5Q2/5K2/8/8/8/8/8 w - - 0 1";
+        let moves = sf.analyze(fen, 13, 1, 120, PlayMode::Endurance).unwrap();
+        let mut pos: Chess = fen.parse::<Fen>().unwrap().into_position(CastlingMode::Standard).unwrap();
+        let selected = moves[0].parse::<UciMove>().unwrap().to_move(&pos).unwrap();
+        pos.play_unchecked(&selected);
+        assert!(!pos.is_game_over(), "Endurance selected an immediate finish: {:?}", moves);
     }
 }
 

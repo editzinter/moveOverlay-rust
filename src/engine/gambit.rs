@@ -15,7 +15,7 @@ fn value(role: Role) -> i32 {
 
 /// Recognize an immediate offer of the moved piece, after accounting for the
 /// initial capture and our best available recapture. Equal trades earn no bonus.
-fn offer(pos: &Chess, m: &shakmaty::Move) -> i32 {
+pub(crate) fn offer(pos: &Chess, m: &shakmaty::Move) -> i32 {
     let gain = m.capture().map(value).unwrap_or(0);
     let mut next = pos.clone();
     next.play_unchecked(m);

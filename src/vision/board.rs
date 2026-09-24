@@ -200,7 +200,11 @@ impl GameStateTracker {
         setup.ep_square = None;
 
         let fen = Fen::from_setup(setup);
-        Some(fen.to_string())
+        let text = fen.to_string();
+        // A stable visual detection can still be an impossible chess position.
+        // Do not cache it as analyzed; another detection may correct the error.
+        fen.into_position::<Chess>(CastlingMode::Standard).ok()?;
+        Some(text)
     }
 }
 
@@ -459,6 +463,16 @@ mod tests {
         let black_turn_fen = tracker.update(e4_board, true);
         assert!(black_turn_fen.is_some());
         assert!(black_turn_fen.unwrap().contains(" b - - 0 1"));
+    }
+
+    #[test]
+    fn tracker_does_not_cache_an_impossible_detected_position() {
+        let mut board = Board::empty();
+        board.set_piece_at(Square::E1, Piece { color: Color::White, role: Role::King });
+        board.set_piece_at(Square::E2, Piece { color: Color::Black, role: Role::King });
+        let mut tracker = GameStateTracker::new();
+        assert_eq!(tracker.update(board.clone(), false), None);
+        assert_eq!(tracker.update(board, false), None);
     }
 
     #[test]
