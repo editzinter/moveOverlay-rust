@@ -51,6 +51,8 @@ pub struct AppConfig {
     pub running: bool,
     #[serde(skip)]
     pub request_selection: bool,
+    #[serde(skip)]
+    pub selection_revision: u64,
 }
 
 fn default_stockfish_depth() -> u32 {
@@ -91,11 +93,17 @@ impl Default for AppConfig {
             window_title: "Runtime Host".to_string(),
             running: false,
             request_selection: false,
+            selection_revision: 0,
         }
     }
 }
 
 impl AppConfig {
+    pub fn select_board_region(&mut self, region: BoardRegion) {
+        self.board_region = Some(region);
+        self.selection_revision = self.selection_revision.wrapping_add(1);
+    }
+
     pub fn load() -> Self {
         let path = Self::config_path();
         if let Ok(content) = fs::read_to_string(path) {
@@ -150,15 +158,23 @@ mod tests {
 
     #[test]
     fn gambit_settings_roundtrip() {
-        let cfg = AppConfig { play_mode: PlayMode::Gambit, ..Default::default() };
-        let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        let cfg = AppConfig {
+            play_mode: PlayMode::Gambit,
+            ..Default::default()
+        };
+        let loaded: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(loaded.play_mode, PlayMode::Gambit);
     }
 
     #[test]
     fn endurance_settings_roundtrip() {
-        let cfg = AppConfig { play_mode: PlayMode::Endurance, ..Default::default() };
-        let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        let cfg = AppConfig {
+            play_mode: PlayMode::Endurance,
+            ..Default::default()
+        };
+        let loaded: AppConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(loaded.play_mode, PlayMode::Endurance);
     }
 
@@ -197,6 +213,17 @@ mod tests {
         assert_eq!(loaded.play_mode, PlayMode::Human);
         assert!(loaded.play_as_black);
         assert_eq!(loaded.stockfish_depth, 20);
+    }
+
+    #[test]
+    fn selecting_the_same_region_still_resets_detection() {
+        let mut cfg = AppConfig::default();
+        let region = BoardRegion { x: 100, y: 100, width: 800, height: 800 };
+        cfg.select_board_region(region.clone());
+        cfg.select_board_region(region);
+        assert_eq!(cfg.selection_revision, 2);
+        let loaded: AppConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(loaded.selection_revision, 0);
     }
 
     #[test]

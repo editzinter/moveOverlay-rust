@@ -125,6 +125,54 @@ pub fn detections_to_board(detections: &[Detection], play_as_black: bool) -> Opt
     Some(board)
 }
 
+/// A missing king is common when a piece is partly obscured. Relax only the
+/// king threshold during recovery; keep the user's threshold for every other
+/// piece so a low-confidence board cannot silently replace the whole position.
+pub fn king_retry_threshold(confidence_threshold: f32) -> f32 {
+    (confidence_threshold - 0.15)
+        .max(0.35)
+        .min(confidence_threshold)
+}
+
+pub fn board_with_king_fallback(
+    detections: &[Detection],
+    confidence_threshold: f32,
+    play_as_black: bool,
+) -> Option<(Board, bool)> {
+    let mut strong: Vec<Detection> = detections
+        .iter()
+        .filter(|d| d.confidence > confidence_threshold)
+        .cloned()
+        .collect();
+    if let Some(board) = detections_to_board(&strong, play_as_black) {
+        return Some((board, false));
+    }
+
+    let retry_threshold = king_retry_threshold(confidence_threshold);
+    strong.extend(
+        detections
+            .iter()
+            .filter(|d| {
+                (d.class_id == 1 || d.class_id == 7)
+                    && d.confidence > retry_threshold
+                    && d.confidence <= confidence_threshold
+            })
+            .cloned(),
+    );
+    detections_to_board(&strong, play_as_black).map(|board| (board, true))
+}
+
+pub fn visible_kings(detections: &[Detection], threshold: f32) -> (bool, bool) {
+    (
+        detections
+            .iter()
+            .any(|d| d.class_id == 1 && d.confidence > threshold),
+        detections
+            .iter()
+            .any(|d| d.class_id == 7 && d.confidence > threshold),
+    )
+}
+
 /// Converts detections to FEN without inferring unavailable castling history.
 #[allow(dead_code)]
 pub fn detections_to_fen(detections: &[Detection], play_as_black: bool) -> Option<String> {
@@ -314,6 +362,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn weak_king_can_recover_without_accepting_weak_other_pieces() {
+        let detections = vec![
+            Detection {
+                class_id: 1,
+                confidence: 0.42,
+                bbox: [0.56, 0.93, 0.08, 0.1],
+            },
+            Detection {
+                class_id: 7,
+                confidence: 0.92,
+                bbox: [0.56, 0.07, 0.08, 0.1],
+            },
+            Detection {
+                class_id: 6,
+                confidence: 0.42,
+                bbox: [0.56, 0.80, 0.08, 0.1],
+            },
+        ];
+        assert_eq!(king_retry_threshold(0.5), 0.35);
+        let (board, used_fallback) = board_with_king_fallback(&detections, 0.5, false).unwrap();
+        assert!(used_fallback);
+        assert_eq!(board.piece_at(Square::E1).unwrap().role, Role::King);
+        assert!(board.piece_at(Square::E2).is_none());
+        assert!(board_with_king_fallback(&detections, 0.6, false).is_none());
+    }
+
+    #[test]
     fn test_missing_kings_validation() {
         let detections = vec![Detection {
             class_id: 1, // White King only
@@ -468,8 +543,20 @@ mod tests {
     #[test]
     fn tracker_does_not_cache_an_impossible_detected_position() {
         let mut board = Board::empty();
-        board.set_piece_at(Square::E1, Piece { color: Color::White, role: Role::King });
-        board.set_piece_at(Square::E2, Piece { color: Color::Black, role: Role::King });
+        board.set_piece_at(
+            Square::E1,
+            Piece {
+                color: Color::White,
+                role: Role::King,
+            },
+        );
+        board.set_piece_at(
+            Square::E2,
+            Piece {
+                color: Color::Black,
+                role: Role::King,
+            },
+        );
         let mut tracker = GameStateTracker::new();
         assert_eq!(tracker.update(board.clone(), false), None);
         assert_eq!(tracker.update(board, false), None);

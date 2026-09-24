@@ -287,6 +287,15 @@ for i, (test_fen, play_as_black, desc) in enumerate(TEST_DATABASE, 1):
     test_ok = True
     error_reasons = []
 
+    expected_board = test_fen.split()[0]
+    detected_board = extracted_fen.split()[0]
+    if detected_board != expected_board:
+        test_ok = False
+        error_reasons.append(f"Vision reconstructed {detected_board}, expected {expected_board}")
+    if not board_obj.is_valid():
+        test_ok = False
+        error_reasons.append("Vision reconstructed an illegal board")
+
     if not moves:
         test_ok = False
         error_reasons.append("Stockfish returned NO moves (empty move list)")
@@ -323,6 +332,5 @@ engine.close()
 print("\n" + "=" * 75)
 print(f"COMPREHENSIVE TEST RESULTS: {passed}/50 PASSED (Failed: {failed})")
 print("=" * 75)
-
 if failed > 0:
     sys.exit(1)

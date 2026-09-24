@@ -58,6 +58,10 @@ The detector benchmarks CUDA and CPU when CUDA initializes, then selects the fas
 
 Suggestions refresh automatically on an unchanged board. If screen capture, vision inference, or Stockfish fails, the control panel shows a recovery message and the worker attempts to recover automatically. An empty engine response on a playable board is retried rather than cached as a finished analysis. On Windows, the running overlay also periodically restores its topmost position.
 
+If board recovery reports a missing king, make sure the entire board is visible and no game popup covers the pieces, then select the full board again. Completing selection resets detection even if the rectangle has the same coordinates. The detector can retry a weak king detection, but it will not draw arrows until a stable, legal board is recognized.
+
+With Anti-Capture Stealth off, the app's own arrows may appear in screen captures and obscure pieces from the detector. Turning it on can help in that case, but the overlay will also disappear from recordings and screen sharing.
+
 ## Safety and Fair Play
 
 **Important Disclaimer:**

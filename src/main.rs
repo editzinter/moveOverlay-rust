@@ -86,7 +86,9 @@ fn get_window_client_origin(_window_title: &str) -> (i32, i32) {
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkerStatus {
     Starting,
-    Ready { detector_backend: &'static str },
+    Ready {
+        detector_backend: &'static str,
+    },
     Recovering(String),
     MissingAssets {
         model_missing: bool,
@@ -115,7 +117,10 @@ fn reassert_overlay_topmost(window_title: &str) {
                 let _ = SetWindowPos(
                     hwnd,
                     HWND_TOPMOST,
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
                 );
             }
@@ -142,9 +147,11 @@ fn analysis_due(
     now: Instant,
 ) -> bool {
     let still_fresh = last_success_fen == Some(fen)
-        && last_success_at.is_some_and(|at| now.saturating_duration_since(at) < ANALYSIS_REFRESH_INTERVAL);
+        && last_success_at
+            .is_some_and(|at| now.saturating_duration_since(at) < ANALYSIS_REFRESH_INTERVAL);
     let retry_cooling_down = last_attempt_fen == Some(fen)
-        && last_attempt_at.is_some_and(|at| now.saturating_duration_since(at) < ANALYSIS_RETRY_INTERVAL);
+        && last_attempt_at
+            .is_some_and(|at| now.saturating_duration_since(at) < ANALYSIS_RETRY_INTERVAL);
     !still_fresh && !retry_cooling_down
 }
 
@@ -153,7 +160,8 @@ fn valid_analysis_result(fen: &str, moves: &[String]) -> bool {
         return true;
     }
     use shakmaty::{fen::Fen, CastlingMode, Chess, Position};
-    fen.parse::<Fen>().ok()
+    fen.parse::<Fen>()
+        .ok()
         .and_then(|f| f.into_position::<Chess>(CastlingMode::Standard).ok())
         .is_some_and(|pos| pos.legal_moves().is_empty())
 }
@@ -173,10 +181,12 @@ fn main() {
     let config = Arc::new(Mutex::new(initial_config));
     let (move_tx, move_rx) = unbounded::<Vec<String>>();
     let worker_status = Arc::new(Mutex::new(WorkerStatus::Starting));
+    let selection_active = Arc::new(AtomicBool::new(false));
 
     // Background worker thread for Vision + Stockfish Engine
     let config_clone = config.clone();
     let worker_status_clone = worker_status.clone();
+    let selection_worker = selection_active.clone();
     thread::spawn(move || {
         let (mut detector, mut sf) = loop {
             let model_path = AppConfig::get_asset_path("best.onnx");
@@ -208,7 +218,9 @@ fn main() {
                     let mut ws = worker_status_clone
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
-                    *ws = WorkerStatus::Ready { detector_backend: d.backend() };
+                    *ws = WorkerStatus::Ready {
+                        detector_backend: d.backend(),
+                    };
                     println!("Vision & Engine worker thread initialized and ready.");
                     break (d, s);
                 }
@@ -246,6 +258,7 @@ fn main() {
         let mut last_conf = -1.0f32;
         let mut last_region: Option<crate::config::BoardRegion> = None;
         let mut last_play_mode = crate::config::PlayMode::Engine;
+        let mut last_selection_revision = 0;
         let mut invalid_detection_count: u32 = 0;
         let mut capture_error_count: u32 = 0;
         let mut detector_error_count: u32 = 0;
@@ -259,7 +272,18 @@ fn main() {
 
         loop {
             let loop_start = std::time::Instant::now();
-            let (region, depth, lines, time_limit_ms, conf, play_as_black, fps, running, play_mode) = {
+            let (
+                region,
+                depth,
+                lines,
+                time_limit_ms,
+                conf,
+                play_as_black,
+                fps,
+                running,
+                play_mode,
+                selection_revision,
+            ) = {
                 let c = lock_config(&config_clone);
                 (
                     c.board_region.clone(),
@@ -271,12 +295,23 @@ fn main() {
                     c.fps,
                     c.running,
                     c.play_mode,
+                    c.selection_revision,
                 )
             };
 
+            // The selection grid covers the board and would otherwise be sent
+            // through the detector as if it were part of the chess position.
+            if selection_worker.load(Ordering::SeqCst) {
+                last_frame = None;
+                cached_fen = None;
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+
             let board_source_changed = running != last_running_state
                 || play_as_black != last_play_side
-                || region != last_region;
+                || region != last_region
+                || selection_revision != last_selection_revision;
             let analysis_changed = play_mode != last_play_mode
                 || depth != last_depth
                 || lines != last_lines
@@ -291,6 +326,12 @@ fn main() {
                 empty_analysis_count = 0;
                 last_frame = None;
                 cached_fen = None;
+                set_worker_status(
+                    &worker_status_clone,
+                    WorkerStatus::Ready {
+                        detector_backend: detector.backend(),
+                    },
+                );
             }
             if board_source_changed || analysis_changed {
                 last_analyzed_fen = None;
@@ -305,6 +346,7 @@ fn main() {
                 last_conf = conf;
                 last_region = region.clone();
                 last_play_mode = play_mode;
+                last_selection_revision = selection_revision;
                 let _ = move_tx.send(Vec::new());
             }
 
@@ -317,9 +359,10 @@ fn main() {
                             Ok(img) => {
                                 capture_error_count = 0;
                                 let pixels = img.as_bytes();
-                                let frame_unchanged = last_frame.as_ref().is_some_and(|(w, h, bytes)| {
-                                    *w == img.width() && *h == img.height() && bytes == pixels
-                                });
+                                let frame_unchanged =
+                                    last_frame.as_ref().is_some_and(|(w, h, bytes)| {
+                                        *w == img.width() && *h == img.height() && bytes == pixels
+                                    });
                                 if !frame_unchanged {
                                     last_frame = Some((img.width(), img.height(), pixels.to_vec()));
                                     cached_fen = None;
@@ -327,20 +370,38 @@ fn main() {
 
                                 // Reuse a settled board on identical frames, but still retry
                                 // failed searches and refresh old suggestions periodically.
-                                let fen = if frame_unchanged { cached_fen.clone() } else { None };
+                                let fen = if frame_unchanged {
+                                    cached_fen.clone()
+                                } else {
+                                    None
+                                };
                                 let fen = if fen.is_some() {
                                     fen
                                 } else {
-                                    match detector.detect(&img, conf) {
+                                    let retry_conf =
+                                        crate::vision::board::king_retry_threshold(conf);
+                                    match detector.detect(&img, retry_conf) {
                                         Ok(detections) => {
                                             detector_error_count = 0;
-                                            if let Some(board) = crate::vision::board::detections_to_board(&detections, play_as_black) {
+                                            if let Some((board, used_king_fallback)) =
+                                                crate::vision::board::board_with_king_fallback(
+                                                    &detections,
+                                                    conf,
+                                                    play_as_black,
+                                                )
+                                            {
                                                 let settled = tracker.update(board, play_as_black);
                                                 if let Some(ref valid_fen) = settled {
                                                     invalid_detection_count = 0;
+                                                    if used_king_fallback
+                                                        && cached_fen.as_deref() != Some(valid_fen)
+                                                    {
+                                                        eprintln!("Board recovered using a lower confidence king detection");
+                                                    }
                                                     cached_fen = Some(valid_fen.clone());
                                                 } else if tracker.candidate_count >= 2 {
-                                                    invalid_detection_count = invalid_detection_count.saturating_add(1);
+                                                    invalid_detection_count =
+                                                        invalid_detection_count.saturating_add(1);
                                                     if invalid_detection_count == 3 {
                                                         eprintln!("Stable board detection is not a legal chess position");
                                                         let _ = move_tx.send(Vec::new());
@@ -350,25 +411,47 @@ fn main() {
                                                         tracker.reset();
                                                         set_worker_status(&worker_status_clone, WorkerStatus::Recovering("Detected board is not a legal position".into()));
                                                     }
+                                                } else {
+                                                    // A recognizable first frame breaks the invalid-frame streak;
+                                                    // the tracker still needs a second matching frame to analyze it.
+                                                    invalid_detection_count = 0;
                                                 }
                                                 settled
                                             } else {
-                                                invalid_detection_count = invalid_detection_count.saturating_add(1);
+                                                invalid_detection_count =
+                                                    invalid_detection_count.saturating_add(1);
                                                 if invalid_detection_count == 3 {
-                                                    eprintln!("Board detection invalid for three frames; clearing suggestions");
+                                                    let (white, black) =
+                                                        crate::vision::board::visible_kings(
+                                                            &detections,
+                                                            retry_conf,
+                                                        );
+                                                    let reason = match (white, black) {
+                                                        (false, false) => "Neither king is visible; close board popups or reselect the full board",
+                                                        (false, true) => "White king is not detected; check the board selection",
+                                                        (true, false) => "Black king is not detected; check the board selection",
+                                                        (true, true) => "Kings could not be placed on separate squares; check the board selection",
+                                                    };
+                                                    eprintln!("Board detection invalid for three frames ({reason}); clearing suggestions");
                                                     let _ = move_tx.send(Vec::new());
                                                     last_analyzed_fen = None;
                                                     last_success_at = None;
                                                     cached_fen = None;
                                                     tracker.reset();
-                                                    set_worker_status(&worker_status_clone, WorkerStatus::Recovering("Board detection is unstable".into()));
+                                                    set_worker_status(
+                                                        &worker_status_clone,
+                                                        WorkerStatus::Recovering(reason.into()),
+                                                    );
                                                 }
                                                 None
                                             }
                                         }
                                         Err(e) => {
-                                            detector_error_count = detector_error_count.saturating_add(1);
-                                            if detector_error_count == 1 || detector_error_count == 3 {
+                                            detector_error_count =
+                                                detector_error_count.saturating_add(1);
+                                            if detector_error_count == 1
+                                                || detector_error_count == 3
+                                            {
                                                 eprintln!("Vision inference error: {e}");
                                             }
                                             if detector_error_count >= 3 {
@@ -380,7 +463,9 @@ fn main() {
                                                     tracker.reset();
                                                     set_worker_status(&worker_status_clone, WorkerStatus::Recovering("Vision inference failed; restarting detector".into()));
                                                 }
-                                                if last_detector_restart.is_none_or(|at| at.elapsed() >= Duration::from_secs(10)) {
+                                                if last_detector_restart.is_none_or(|at| {
+                                                    at.elapsed() >= Duration::from_secs(10)
+                                                }) {
                                                     last_detector_restart = Some(Instant::now());
                                                     match Detector::new(model_path.to_str().unwrap_or("best.onnx")) {
                                                         Ok(new_detector) => {
@@ -398,15 +483,28 @@ fn main() {
 
                                 if let Some(fen) = fen {
                                     let now = Instant::now();
-                                    if analysis_due(&fen, last_analyzed_fen.as_deref(), last_success_at,
-                                        last_attempt_fen.as_deref(), last_attempt_at, now) {
+                                    if analysis_due(
+                                        &fen,
+                                        last_analyzed_fen.as_deref(),
+                                        last_success_at,
+                                        last_attempt_fen.as_deref(),
+                                        last_attempt_at,
+                                        now,
+                                    ) {
                                         if last_analyzed_fen.as_deref() != Some(&fen)
-                                            && last_attempt_fen.as_deref() != Some(&fen) {
+                                            && last_attempt_fen.as_deref() != Some(&fen)
+                                        {
                                             let _ = move_tx.send(Vec::new());
                                         }
                                         last_attempt_fen = Some(fen.clone());
                                         last_attempt_at = Some(now);
-                                        match sf.analyze(&fen, depth, lines, time_limit_ms, play_mode) {
+                                        match sf.analyze(
+                                            &fen,
+                                            depth,
+                                            lines,
+                                            time_limit_ms,
+                                            play_mode,
+                                        ) {
                                             Ok(raw_moves) => {
                                                 // A click during the blocking search invalidates its result.
                                                 let current = lock_config(&config_clone);
@@ -417,38 +515,81 @@ fn main() {
                                                     || current.confidence_threshold != conf
                                                     || current.play_as_black != play_as_black
                                                     || current.board_region != region
+                                                    || current.selection_revision != selection_revision
+                                                    || selection_worker.load(Ordering::SeqCst)
                                                     || !current.running
                                                 {
                                                     continue;
                                                 }
                                                 drop(current);
-                                                let valid_moves = crate::vision::board::validate_moves_for_side(&fen, &raw_moves, play_as_black);
+                                                let valid_moves =
+                                                    crate::vision::board::validate_moves_for_side(
+                                                        &fen,
+                                                        &raw_moves,
+                                                        play_as_black,
+                                                    );
                                                 let no_nonmating_move = play_mode == crate::config::PlayMode::Endurance
                                                     && valid_moves.is_empty()
                                                     && crate::engine::endurance::fallback_nonmating_moves(&fen).is_empty();
-                                                if valid_analysis_result(&fen, &valid_moves) || no_nonmating_move {
-                                                    println!("▶ [{:?}] Board FEN: {} | Best moves: {:?}", play_mode, fen, valid_moves);
+                                                if valid_analysis_result(&fen, &valid_moves)
+                                                    || no_nonmating_move
+                                                {
+                                                    println!(
+                                                        "▶ [{:?}] Board FEN: {} | Best moves: {:?}",
+                                                        play_mode, fen, valid_moves
+                                                    );
                                                     let _ = move_tx.send(valid_moves);
                                                     last_analyzed_fen = Some(fen);
                                                     last_success_at = Some(Instant::now());
                                                     empty_analysis_count = 0;
-                                                    set_worker_status(&worker_status_clone, WorkerStatus::Ready { detector_backend: detector.backend() });
+                                                    set_worker_status(
+                                                        &worker_status_clone,
+                                                        WorkerStatus::Ready {
+                                                            detector_backend: detector.backend(),
+                                                        },
+                                                    );
                                                 } else {
-                                                    empty_analysis_count = empty_analysis_count.saturating_add(1);
+                                                    empty_analysis_count =
+                                                        empty_analysis_count.saturating_add(1);
                                                     eprintln!("No legal suggestion for nonterminal board; retrying (attempt {})", empty_analysis_count);
-                                                    set_worker_status(&worker_status_clone, WorkerStatus::Recovering("No legal engine suggestion; retrying".into()));
+                                                    set_worker_status(
+                                                        &worker_status_clone,
+                                                        WorkerStatus::Recovering(
+                                                            "No legal engine suggestion; retrying"
+                                                                .into(),
+                                                        ),
+                                                    );
                                                     if empty_analysis_count >= 2 {
-                                                        match Stockfish::new(engine_path.to_str().unwrap_or("stockfish.exe")) {
-                                                            Ok(new_sf) => { sf = new_sf; empty_analysis_count = 0; }
-                                                            Err(e) => eprintln!("Stockfish restart failed: {e}"),
+                                                        match Stockfish::new(
+                                                            engine_path
+                                                                .to_str()
+                                                                .unwrap_or("stockfish.exe"),
+                                                        ) {
+                                                            Ok(new_sf) => {
+                                                                sf = new_sf;
+                                                                empty_analysis_count = 0;
+                                                            }
+                                                            Err(e) => eprintln!(
+                                                                "Stockfish restart failed: {e}"
+                                                            ),
                                                         }
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!("Stockfish error: {e}. Restarting engine...");
-                                                set_worker_status(&worker_status_clone, WorkerStatus::Recovering("Stockfish failed; restarting engine".into()));
-                                                if let Ok(new_sf) = Stockfish::new(engine_path.to_str().unwrap_or("stockfish.exe")) {
+                                                eprintln!(
+                                                    "Stockfish error: {e}. Restarting engine..."
+                                                );
+                                                set_worker_status(
+                                                    &worker_status_clone,
+                                                    WorkerStatus::Recovering(
+                                                        "Stockfish failed; restarting engine"
+                                                            .into(),
+                                                    ),
+                                                );
+                                                if let Ok(new_sf) = Stockfish::new(
+                                                    engine_path.to_str().unwrap_or("stockfish.exe"),
+                                                ) {
                                                     sf = new_sf;
                                                 }
                                             }
@@ -468,7 +609,18 @@ fn main() {
                                     cached_fen = None;
                                     last_frame = None;
                                     tracker.reset();
-                                    set_worker_status(&worker_status_clone, WorkerStatus::Recovering("Screen capture failed; retrying".into()));
+                                    let reason = if e
+                                        .to_string()
+                                        .contains("Selected board is outside one display")
+                                    {
+                                        "Selected board is outside one display; reselect the full board".to_string()
+                                    } else {
+                                        "Screen capture failed; retrying".to_string()
+                                    };
+                                    set_worker_status(
+                                        &worker_status_clone,
+                                        WorkerStatus::Recovering(reason),
+                                    );
                                 }
                             }
                         }
@@ -481,7 +633,6 @@ fn main() {
         }
     });
 
-    let selection_active = Arc::new(AtomicBool::new(false));
     let hotkey_toggle_side = Arc::new(AtomicBool::new(false));
     let hotkey_select_region = Arc::new(AtomicBool::new(false));
 
@@ -922,7 +1073,7 @@ impl eframe::App for OverlayWrapper {
                     ui.checkbox(
                         &mut c.stealth_mode,
                         "Anti-Capture Stealth (Exclude from OBS/Share)",
-                    );
+                    ).on_hover_text("Also keeps the overlay out of board screenshots used by detection; recordings will not show it.");
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -1178,7 +1329,7 @@ impl eframe::App for OverlayWrapper {
                                 let win_origin = get_window_client_origin("♟ MoveOverlay");
                                 let board_region = crate::overlay::window::egui_rect_to_board_region(rect, win_origin, ppp);
                                 let mut c = lock_config(&self.config);
-                                c.board_region = Some(board_region);
+                                c.select_board_region(board_region);
                                 let _ = c.save();
                                 println!("Board region successfully saved: {:?}", c.board_region);
                                 self.selection_active.store(false, Ordering::SeqCst);
@@ -1258,11 +1409,46 @@ mod recovery_tests {
         let now = Instant::now();
         let fen = "6k1/8/8/8/8/8/8/6K1 w - - 0 1";
         assert!(analysis_due(fen, None, None, None, None, now));
-        assert!(!analysis_due(fen, None, None, Some(fen), Some(now), now + Duration::from_secs(1)));
-        assert!(analysis_due("new position", None, None, Some(fen), Some(now), now + Duration::from_secs(1)));
-        assert!(analysis_due(fen, None, None, Some(fen), Some(now), now + Duration::from_secs(3)));
-        assert!(!analysis_due(fen, Some(fen), Some(now), Some(fen), Some(now), now + Duration::from_secs(10)));
-        assert!(analysis_due(fen, Some(fen), Some(now), Some(fen), Some(now), now + Duration::from_secs(31)));
+        assert!(!analysis_due(
+            fen,
+            None,
+            None,
+            Some(fen),
+            Some(now),
+            now + Duration::from_secs(1)
+        ));
+        assert!(analysis_due(
+            "new position",
+            None,
+            None,
+            Some(fen),
+            Some(now),
+            now + Duration::from_secs(1)
+        ));
+        assert!(analysis_due(
+            fen,
+            None,
+            None,
+            Some(fen),
+            Some(now),
+            now + Duration::from_secs(3)
+        ));
+        assert!(!analysis_due(
+            fen,
+            Some(fen),
+            Some(now),
+            Some(fen),
+            Some(now),
+            now + Duration::from_secs(10)
+        ));
+        assert!(analysis_due(
+            fen,
+            Some(fen),
+            Some(now),
+            Some(fen),
+            Some(now),
+            now + Duration::from_secs(31)
+        ));
     }
 
     #[test]
