@@ -423,7 +423,10 @@ fn main() {
                                                 }
                                                 drop(current);
                                                 let valid_moves = crate::vision::board::validate_moves_for_side(&fen, &raw_moves, play_as_black);
-                                                if valid_analysis_result(&fen, &valid_moves) {
+                                                let no_nonmating_move = play_mode == crate::config::PlayMode::Endurance
+                                                    && valid_moves.is_empty()
+                                                    && crate::engine::endurance::fallback_nonmating_moves(&fen).is_empty();
+                                                if valid_analysis_result(&fen, &valid_moves) || no_nonmating_move {
                                                     println!("▶ [{:?}] Board FEN: {} | Best moves: {:?}", play_mode, fen, valid_moves);
                                                     let _ = move_tx.send(valid_moves);
                                                     last_analyzed_fen = Some(fen);

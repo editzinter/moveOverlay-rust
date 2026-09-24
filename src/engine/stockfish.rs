@@ -380,6 +380,14 @@ impl Stockfish {
             // A partial PV can be malformed or absent; bestmove is authoritative.
             result.push(best_move.unwrap());
         }
+        if mode == PlayMode::Endurance {
+            result = crate::engine::endurance::without_checkmates(fen, result);
+            result = crate::engine::endurance::without_avoidable_endings(fen, result);
+            if result.is_empty() {
+                result = crate::engine::endurance::fallback_nonmating_moves(fen);
+                result.truncate(lines_clamped as usize);
+            }
+        }
         Ok(result)
     }
 
@@ -528,6 +536,26 @@ mod tests {
         let selected = moves[0].parse::<UciMove>().unwrap().to_move(&pos).unwrap();
         pos.play_unchecked(&selected);
         assert!(!pos.is_game_over(), "Endurance selected an immediate finish: {:?}", moves);
+    }
+
+    #[test]
+    #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
+    fn endurance_shallow_search_never_returns_a_mating_arrow() {
+        use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Position};
+        let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
+        let mut sf = Stockfish::new(exe_path.to_str().unwrap()).unwrap();
+        let fen = "7k/5Q2/5K2/8/8/8/8/8 w - - 0 1";
+        // Depth 1 cannot provide the completed depth 8 snapshot used by rank().
+        let moves = sf.analyze(fen, 1, 3, 10, PlayMode::Endurance).unwrap();
+        assert!(!moves.is_empty());
+        let pos: Chess = fen.parse::<Fen>().unwrap().into_position(CastlingMode::Standard).unwrap();
+        for text in moves {
+            let selected = text.parse::<UciMove>().unwrap().to_move(&pos).unwrap();
+            let mut next = pos.clone();
+            next.play_unchecked(&selected);
+            assert!(!next.is_checkmate(), "Endurance suggested checkmate: {text}");
+            assert!(!next.is_game_over(), "Endurance suggested an immediate ending: {text}");
+        }
     }
 }
 
