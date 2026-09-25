@@ -172,6 +172,50 @@ fn pawn_push_reserves(pos: &Chess) -> i32 {
     count
 }
 
+// A legal capture is only an exchange threat when we can take the capturing
+// piece back for roughly the same material. Look at the opponent's most
+// costly such option: they can choose only one reply to our move.
+fn immediate_piece_exchange_cost(pos: &Chess) -> i32 {
+    pos.legal_moves()
+        .iter()
+        .filter_map(|reply| {
+            let captured = reply.capture()?;
+            let captured_value = match captured {
+                Role::Knight => 320,
+                Role::Bishop => 330,
+                Role::Rook => 500,
+                Role::Queen => 900,
+                _ => return None,
+            };
+            let mut after_capture = pos.clone();
+            after_capture.play_unchecked(reply);
+            let capturer = after_capture.board().piece_at(reply.to())?;
+            let capturer_value: i32 = match capturer.role {
+                Role::Pawn => 100,
+                Role::Knight => 320,
+                Role::Bishop => 330,
+                Role::Rook => 500,
+                Role::Queen => 900,
+                Role::King => return None,
+            };
+            if (captured_value - capturer_value).abs() > 50 {
+                return None;
+            }
+            after_capture
+                .legal_moves()
+                .iter()
+                .any(|recapture| recapture.is_capture() && recapture.to() == reply.to())
+                .then_some(match captured {
+                    Role::Knight | Role::Bishop => 100,
+                    Role::Rook => 130,
+                    Role::Queen => 170,
+                    _ => unreachable!(),
+                })
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 fn eligible(score: i32, best: i32) -> bool {
     if best < -MATE_SCORE {
         // When mate is unavoidable, choose the line that delays it longest.
@@ -236,6 +280,7 @@ fn longevity_score(
         .count();
     score -= (pawn_captures.min(4) as i32) * 35;
     score -= (other_captures.min(4) as i32) * 10;
+    score -= immediate_piece_exchange_cost(&next);
     score
 }
 
@@ -356,6 +401,34 @@ mod tests {
         let fen = "6k1/8/8/3p4/4P3/8/8/6K1 w - - 0 1";
         let (moves, scores) = candidates(&[("e4d5", 15), ("g1f2", 0)]);
         assert_eq!(rank(fen, &moves, &scores)[0], "g1f2");
+    }
+
+    #[test]
+    fn retreats_bishop_to_delay_an_equal_exchange() {
+        let fen = "6k1/8/4b3/8/2B5/3P4/8/6K1 w - - 0 1";
+        let (moves, scores) = candidates(&[("g1h1", 0), ("c4b5", -40)]);
+        assert_eq!(rank(fen, &moves, &scores)[0], "c4b5");
+    }
+
+    #[test]
+    fn black_can_delay_an_equal_exchange() {
+        let fen = "6k1/8/1p6/2b5/8/4B3/8/6K1 b - - 0 1";
+        let (moves, scores) = candidates(&[("g8h8", 0), ("c5b4", -40)]);
+        assert_eq!(rank(fen, &moves, &scores)[0], "c5b4");
+    }
+
+    #[test]
+    fn does_not_avoid_exchange_by_breaching_the_defence_limit() {
+        let fen = "6k1/8/4b3/8/2B5/3P4/8/6K1 w - - 0 1";
+        let (moves, scores) = candidates(&[("g1h1", -100), ("c4b5", -200)]);
+        assert_eq!(rank(fen, &moves, &scores), vec!["g1h1"]);
+    }
+
+    #[test]
+    fn a_pawn_sacrifice_is_not_mistaken_for_an_equal_piece_exchange() {
+        let fen = "7k/8/8/1p6/2B5/3P4/8/6K1 w - - 0 1";
+        let pos = parsed_position(fen).unwrap();
+        assert_eq!(immediate_piece_exchange_cost(&pos), 0);
     }
 
     #[test]

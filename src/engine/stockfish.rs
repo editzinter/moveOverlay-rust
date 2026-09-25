@@ -557,5 +557,42 @@ mod tests {
             assert!(!next.is_game_over(), "Endurance suggested an immediate ending: {text}");
         }
     }
+
+    #[test]
+    #[ignore = "requires stockfish.exe; run cargo test -- --include-ignored"]
+    fn endurance_live_search_matrix_keeps_suggestions_legal_and_continuing() {
+        use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Position};
+        let exe_path = crate::config::AppConfig::get_asset_path("stockfish.exe");
+        let mut sf = Stockfish::new(exe_path.to_str().unwrap()).unwrap();
+        let positions = [
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+            "6k1/8/4b3/8/2B5/3P4/8/6K1 w - - 0 1",
+            "6k1/8/1p6/2b5/8/4B3/8/6K1 b - - 0 1",
+            "7k/5Q2/5K2/8/8/8/8/8 w - - 0 1",
+        ];
+        for fen in positions {
+            let pos: Chess = fen.parse::<Fen>().unwrap().into_position(CastlingMode::Standard).unwrap();
+            let can_continue = pos.legal_moves().iter().any(|m| {
+                let mut next = pos.clone();
+                next.play_unchecked(m);
+                !next.is_game_over()
+            });
+            for (depth, budget) in [(1, 10), (13, 120), (20, 700)] {
+                let moves = sf.analyze(fen, depth, 3, budget, PlayMode::Endurance).unwrap();
+                assert!(!moves.is_empty(), "No suggestion for {fen} at {depth}/{budget}");
+                assert!(moves.len() <= 3);
+                for text in moves {
+                    let selected = text.parse::<UciMove>().unwrap().to_move(&pos).unwrap();
+                    assert!(pos.legal_moves().contains(&selected));
+                    let mut next = pos.clone();
+                    next.play_unchecked(&selected);
+                    assert!(!next.is_checkmate(), "Checkmate suggested for {fen}: {text}");
+                    if can_continue {
+                        assert!(!next.is_game_over(), "Avoidable ending suggested for {fen}: {text}");
+                    }
+                }
+            }
+        }
+    }
 }
 
